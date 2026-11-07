@@ -4,7 +4,7 @@ import { forecast, fundamentals, technicals, linreg } from '../model.js';
 import { appendRows } from '../scripts/snapshot.mjs';
 
 const DAY = 86400000, NOW = Date.parse('2026-11-07');
-const base = { games: ['paper', 'arena', 'mtgo'], legalities: { commander: 'legal', legacy: 'legal', modern: 'legal' },
+const base = { games: ['paper'], legalities: { commander: 'legal', legacy: 'legal', modern: 'legal' },
   rarity: 'mythic', released_at: '2021-06-18', reprint: false, reserved: false, edhrec_rank: 300 };
 
 test('linreg trova la pendenza esatta', () => {
@@ -18,8 +18,8 @@ test('i fondamentali premiano la Reserved List e puniscono il bulk', () => {
   assert.ok(rl > 80, `rl=${rl}`); assert.ok(bulk < 40, `bulk=${bulk}`);
 });
 
-test('una carta solo Arena è NON INVESTIBILE', () => {
-  const f = forecast({ card: { ...base, games: ['arena'] }, price: null, now: NOW });
+test('una carta senza versione fisica è NON INVESTIBILE', () => {
+  const f = forecast({ card: { ...base, games: ['mtgo'] }, price: null, now: NOW });
   assert.equal(f.signal, 'NON INVESTIBILE');
 });
 

@@ -2,14 +2,20 @@ import { forecast } from './model.js';
 
 const API = 'https://api.scryfall.com';
 const HOUR = 3600000, DAY = 24 * HOUR;
-const COLS = { eur: 1, usd: 2, eur_foil: 3, usd_foil: 4, tix: 5 };
+const COLS = { eur: 1, usd: 2, eur_foil: 3, usd_foil: 4 };
+// Valore stimato rispetto al prezzo Near Mint (scala delle condizioni di Cardmarket)
+const COND = {
+  MT: { label: 'Mint', k: 1 }, NM: { label: 'Near Mint', k: 1 }, EX: { label: 'Excellent', k: 0.85 },
+  GD: { label: 'Good', k: 0.72 }, LP: { label: 'Light Played', k: 0.6 }, PL: { label: 'Played', k: 0.45 }, PO: { label: 'Poor', k: 0.25 },
+};
+const condK = c => (COND[c] || COND.NM).k;
 
 // ---------- storage ----------
 const LS = {
   get(k, d) { try { const v = localStorage.getItem('mtgi.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem('mtgi.' + k, JSON.stringify(v)); } catch (e) { toast('Spazio locale esaurito: esporta un backup'); } },
 };
-const DEFAULTS = { currency: 'eur', refreshMin: 15, feePct: 8, horizon: 30, alertPct: 10, noticeDismissed: false };
+const DEFAULTS = { currency: 'eur', refreshMin: 15, feePct: 8, horizon: 30, alertPct: 10 };
 const S = {
   settings: { ...DEFAULTS, ...LS.get('settings', {}) },
   watch: LS.get('watch', []),
@@ -29,7 +35,6 @@ const nf = new Intl.NumberFormat('it-IT', { minimumFractionDigits: 2, maximumFra
 function fmt(p, cur = S.settings.currency) {
   if (p == null || isNaN(p)) return '—';
   if (cur === 'usd') return '$' + nf.format(p);
-  if (cur === 'tix') return nf.format(p) + ' tix';
   return nf.format(p) + ' €';
 }
 const pct = (x, sign = true) => (x == null || isNaN(x) ? '—' : (sign && x > 0 ? '+' : '') + (x * 100).toFixed(1).replace('.', ',') + '%');
@@ -59,14 +64,13 @@ function slim(c) {
     id: c.id, name: c.name, set: c.set, set_name: c.set_name, cn: c.collector_number, rarity: c.rarity,
     released_at: c.released_at, reserved: c.reserved, reprint: c.reprint, edhrec_rank: c.edhrec_rank,
     legalities: c.legalities, games: c.games, prices: c.prices, type_line: c.type_line || c.card_faces?.[0]?.type_line,
-    img: face.normal, thumb: face.small, purchase: c.purchase_uris || {}, uri: c.scryfall_uri, arena_id: c.arena_id,
+    img: face.normal, thumb: face.small, purchase: c.purchase_uris || {}, uri: c.scryfall_uri,
     oracle_id: c.oracle_id, fetchedAt: Date.now(),
   };
 }
 
 function priceOf(card, foil = false, cur = S.settings.currency) {
   const p = card?.prices || {};
-  if (cur === 'tix') return num(p.tix);
   const base = num(p[cur]), f = num(p[cur + '_foil']);
   return foil ? (f ?? base) : (base ?? f);
 }
@@ -74,7 +78,7 @@ function priceOf(card, foil = false, cur = S.settings.currency) {
 // ---------- price history ----------
 function snapshot(card) {
   const p = card.prices || {};
-  const row = [Date.now(), num(p.eur), num(p.usd), num(p.eur_foil), num(p.usd_foil), num(p.tix)];
+  const row = [Date.now(), num(p.eur), num(p.usd), num(p.eur_foil), num(p.usd_foil)];
   const h = S.history[card.id] || (S.history[card.id] = []);
   const last = h[h.length - 1];
   if (last) {
@@ -86,7 +90,7 @@ function snapshot(card) {
 }
 
 function seriesFor(id, foil = false, cur = S.settings.currency) {
-  const col = cur === 'tix' ? COLS.tix : COLS[foil ? cur + '_foil' : cur];
+  const col = COLS[foil ? cur + '_foil' : cur];
   const rows = [...(S.remoteHistory[id] || []), ...(S.history[id] || [])].sort((a, b) => a[0] - b[0]);
   const out = [];
   for (const r of rows) {
@@ -179,13 +183,12 @@ function cardRow(card, { foil = false, extra = '' } = {}) {
   const price = priceOf(card, foil);
   const ch = changeSince(card.id, foil, 7 * DAY);
   const starred = S.watch.includes(card.id);
-  const arena = card.games?.includes('arena') ? '<span class="tag arena">Arena</span>' : '';
-  const digital = !card.games?.includes('paper') ? '<span class="tag">solo digitale</span>' : '';
+  const rl = card.reserved ? '<span class="tag gold">Reserved List</span>' : '';
   return `<div class="row" data-action="open" data-id="${card.id}">
     ${card.thumb ? `<img class="thumb" loading="lazy" src="${esc(card.thumb)}" alt="">` : '<div class="thumb"></div>'}
     <div class="info">
       <div class="name">${esc(card.name)} ${foil ? '<span class="tag foil">Foil</span>' : ''}</div>
-      <div class="meta">${esc(card.set_name)} · ${esc(card.rarity)} ${arena}${digital}</div>
+      <div class="meta">${esc(card.set_name)} · ${esc(card.rarity)} ${rl}</div>
       ${extra}
     </div>
     <div class="nums">
@@ -209,9 +212,10 @@ function portfolioStats() {
     const card = S.cards[l.id];
     if (!card) continue;
     if ((l.cur || 'eur') !== cur) { other++; continue; }
-    const p = priceOf(card, l.foil) ?? 0;
+    const k = condK(l.cond);
+    const p = (priceOf(card, l.foil) ?? 0) * k;
     const f = fc(card, l.foil);
-    cost += l.qty * l.buy; value += l.qty * p; future += l.qty * (f.expected ?? p);
+    cost += l.qty * l.buy; value += l.qty * p; future += l.qty * (f.expected != null ? f.expected * k : p);
     lots.push({ l, card, p, f, val: l.qty * p, pl: l.qty * (p - l.buy) });
   }
   const net = value * (1 - fee);
@@ -229,7 +233,6 @@ function renderDashboard() {
     kpi('Profitto / perdita', fmt(st.pl), pct(st.plPct), toneOf(st.pl)) +
     kpi(`Previsione ${S.settings.horizon}g`, fmt(st.future), st.value ? pct((st.future - st.value) / st.value) : '', toneOf(st.future - st.value)) +
     kpi('Segnali', `<span class="up">${buys}↑</span> <span class="down">${sells}↓</span>`, `${all.length} carte seguite`);
-  $('#arena-notice').hidden = S.settings.noticeDismissed;
   const order = { up: 0, down: 1, flat: 2, muted: 3 };
   fcs.sort((a, b) => order[a.f.tone] - order[b.f.tone] || b.f.fund.score - a.f.fund.score);
   $('#dash-signals').innerHTML = fcs.length
@@ -259,7 +262,7 @@ function renderPortfolio() {
     ${sorted[0] && sorted[0].val / total > 0.4 ? '<p class="warn small">⚠ Più del 40% del portafoglio è in una sola carta: una ristampa annunciata può costarti cara. Diversifica.</p>' : ''}` : '';
   $('#pf-list').innerHTML = st.lots.length ? st.lots.map(({ l, card, p, pl }) => cardRow(card, {
     foil: l.foil,
-    extra: `<div class="lot">${l.qty}× a ${fmt(l.buy)} · P/L <b class="${toneOf(pl)}">${fmt(pl)}</b>
+    extra: `<div class="lot">${l.qty}× ${esc(l.cond || 'NM')} a ${fmt(l.buy)} · vale ${fmt(p)} · P/L <b class="${toneOf(pl)}">${fmt(pl)}</b>
       <button class="link" data-action="remove-lot" data-lid="${l.lid}">rimuovi</button></div>`,
   })).join('') : '<p class="muted">Nessuna posizione aperta.</p>';
   if (st.other) $('#pf-list').insertAdjacentHTML('beforeend', `<p class="muted small">${st.other} posizioni registrate in un'altra valuta non sono incluse: cambia valuta nelle impostazioni per vederle.</p>`);
@@ -326,12 +329,10 @@ async function openCard(id) {
         <div class="dbody">
           <h2>${esc(card.name)}</h2>
           <div class="meta">${esc(card.type_line)} · ${esc(card.set_name)} #${esc(card.cn)} · ${esc(card.rarity)}
-            ${card.reserved ? '<span class="tag gold">Reserved List</span>' : ''}
-            ${card.games?.includes('arena') ? '<span class="tag arena">Arena</span>' : ''}</div>
+            ${card.reserved ? '<span class="tag gold">Reserved List</span>' : ''}</div>
           <div class="prices">
             <div><span>Cardmarket</span><b>${fmt(num(p.eur), 'eur')}</b><small>foil ${fmt(num(p.eur_foil), 'eur')}</small></div>
             <div><span>TCGplayer</span><b>${fmt(num(p.usd), 'usd')}</b><small>foil ${fmt(num(p.usd_foil), 'usd')}</small></div>
-            <div><span>MTGO</span><b>${fmt(num(p.tix), 'tix')}</b><small>Cardhoarder</small></div>
           </div>
           <div class="seg"><button class="${!foil ? 'on' : ''}" data-foil="0">Normale</button><button class="${foil ? 'on' : ''}" data-foil="1">Foil</button></div>
           <div class="signal ${f.tone}">
@@ -354,10 +355,13 @@ async function openCard(id) {
             ${card.purchase.cardmarket ? `<a class="btn ghost" target="_blank" rel="noopener" href="${esc(card.purchase.cardmarket)}">Cardmarket ↗</a>` : ''}
             ${card.purchase.tcgplayer ? `<a class="btn ghost" target="_blank" rel="noopener" href="${esc(card.purchase.tcgplayer)}">TCGplayer ↗</a>` : ''}
             <a class="btn ghost" target="_blank" rel="noopener" href="${esc(card.uri)}">Scryfall ↗</a>
+            <button class="ghost" data-act="prints">Tutte le stampe</button>
           </div>
           <form class="addlot" data-addlot>
             <h3>Aggiungi al portafoglio</h3>
             <label>Quantità <input name="qty" type="number" min="1" value="1" required></label>
+            <label>Condizione <select name="cond">${Object.entries(COND).map(([k, c]) =>
+              `<option value="${k}" ${k === 'NM' ? 'selected' : ''}>${k} · ${c.label}${c.k < 1 ? ` (~${Math.round(c.k * 100)}%)` : ''}</option>`).join('')}</select></label>
             <label>Prezzo di acquisto (${S.settings.currency.toUpperCase()}) <input name="buy" type="number" min="0" step="0.01" value="${priceOf(card, foil) ?? ''}" required></label>
             <button type="submit">Aggiungi ${foil ? '(foil)' : ''}</button>
           </form>
@@ -370,13 +374,19 @@ async function openCard(id) {
     const fb = e.target.closest('[data-foil]');
     if (fb) { foil = fb.dataset.foil === '1'; draw(); }
     if (e.target.closest('[data-act="watch"]')) { toggleWatch(card); draw(); }
+    if (e.target.closest('[data-act="prints"]')) {
+      dlg.close();
+      document.querySelector('[data-tab="market"]').click();
+      $('#search-q').value = card.name;
+      runMarket(`!"${card.name.replace(/"/g, '')}" unique:prints`, 'released');
+    }
   };
   dlg.onsubmit = e => {
     if (!e.target.matches('[data-addlot]')) return;
     e.preventDefault();
     const fd = new FormData(e.target);
     S.portfolio.push({ lid: crypto.randomUUID(), id: card.id, qty: Number(fd.get('qty')), buy: Number(fd.get('buy')),
-      foil, cur: S.settings.currency, date: new Date().toISOString() });
+      cond: fd.get('cond') || 'NM', foil, cur: S.settings.currency, date: new Date().toISOString() });
     S.cards[card.id] = card; snapshot(card);
     save('portfolio', 'cards', 'history');
     toast(`Aggiunto: ${fd.get('qty')}× ${card.name}`);
@@ -397,18 +407,20 @@ function toggleWatch(card) {
 
 // ---------- market / scanner ----------
 const searchCache = {};
-const pkey = () => (S.settings.currency === 'tix' ? 'tix' : S.settings.currency);
+const pkey = () => S.settings.currency;
 const PRESETS = [
   { name: 'Blue chip Commander', q: p => `f:commander ${p}>=10 game:paper`, order: 'edhrec' },
   { name: 'Reserved List', q: p => `is:reserved ${p}>=1`, order: 'edhrec' },
   { name: 'Staple Modern/Legacy', q: p => `(f:modern or f:legacy) -f:standard ${p}>=5`, order: 'edhrec' },
   { name: 'Mai ristampate', q: p => `not:reprint -is:reserved f:commander ${p}>=5 date<${isoDaysAgo(365)}`, order: 'edhrec' },
   { name: 'Uscite recenti (rischio calo)', q: p => `date>=${isoDaysAgo(60)} ${p}>=3 game:paper`, order: pkey() },
-  { name: 'Su Arena e in carta', q: p => `game:arena game:paper ${p}>=3`, order: 'edhrec' },
+  { name: 'Vintage (prima del 2003)', q: p => `date<2003-01-01 ${p}>=10`, order: 'edhrec' },
+  { name: 'Mitiche giocate sotto 20', q: p => `r:mythic ${p}>=5 ${p}<=20 f:commander`, order: 'edhrec' },
 ];
 function isoDaysAgo(n) { return new Date(Date.now() - n * DAY).toISOString().slice(0, 10); }
 
 async function search(q, order = 'edhrec') {
+  if (!/\bgame:paper\b/.test(q)) q += ' game:paper'; // solo carte fisiche, mai stampe digitali
   const unique = /\bunique:/.test(q) ? '' : '&unique=cards';
   const data = await api(`/cards/search?order=${order}${unique}&q=${encodeURIComponent(q)}`);
   if (data.object === 'error') return [];
@@ -467,18 +479,16 @@ $('#search-form').addEventListener('submit', e => {
   e.preventDefault();
   let q = $('#search-q').value.trim();
   if (!q) return;
-  if ($('#only-arena').checked) q += ' game:arena';
   runMarket(q, 'edhrec');
 });
 $('#presets').innerHTML = PRESETS.map((p, i) => `<button class="chip" data-preset="${i}">${p.name}</button>`).join('');
 $('#presets').addEventListener('click', e => {
   const b = e.target.closest('[data-preset]'); if (!b) return;
   const p = PRESETS[b.dataset.preset];
-  runMarket(p.q(pkey()) + ($('#only-arena').checked ? ' game:arena' : ''), p.order);
+  runMarket(p.q(pkey()), p.order);
 });
 
 $('#refresh-btn').addEventListener('click', () => refresh());
-$('#dismiss-notice').addEventListener('click', () => { S.settings.noticeDismissed = true; save('settings'); renderDashboard(); });
 
 const sf = $('#settings-form');
 for (const [k, v] of Object.entries(S.settings)) if (sf.elements[k]) sf.elements[k].value = v;

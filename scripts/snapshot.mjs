@@ -13,7 +13,7 @@ async function readJSON(name, fallback) {
 export function appendRows(history, cards, date) {
   for (const c of cards) {
     const p = c.prices || {};
-    const row = [date, num(p.eur), num(p.usd), num(p.eur_foil), num(p.usd_foil), num(p.tix)];
+    const row = [date, num(p.eur), num(p.usd), num(p.eur_foil), num(p.usd_foil)];
     const rows = (history.cards[c.id] ||= []);
     if (rows.length && rows[rows.length - 1][0] === date) rows[rows.length - 1] = row; // una riga al giorno
     else rows.push(row);

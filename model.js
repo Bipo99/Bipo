@@ -63,7 +63,7 @@ export function fundamentals(card, price, now = Date.now()) {
   const games = card.games || [];
 
   if (!games.includes('paper')) {
-    add(-60, 'Solo digitale (Arena/MTGO): non esiste un mercato in denaro per questa carta');
+    add(-60, 'Non esiste in versione fisica: nessun mercato su cui venderla');
   }
   if (card.reserved) add(22, 'Reserved List: Wizards ha promesso di non ristamparla mai');
   else if (card.reprint) add(-4, 'Già ristampata: il rischio di altre ristampe resta alto');
@@ -96,7 +96,6 @@ export function fundamentals(card, price, now = Date.now()) {
     else if (ageDays < 180) add(-4, 'Set recente: l\'offerta è ancora alta');
     else if (ageDays > 730) add(5, 'Set di più di 2 anni fa: le buste sono fuori stampa');
   }
-  if (games.includes('arena') && games.includes('paper')) add(2, 'Su Arena: la vetrina digitale ne mantiene viva la domanda');
 
   if (price != null) {
     if (price < 1) add(-30, 'Carta da bulk (<1): commissioni e spedizione si mangiano ogni guadagno');

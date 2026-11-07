@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>MTG Invest</title>
-  <meta name="description" content="Prezzi in tempo reale, portafoglio e previsioni di mercato per le carte di Magic: The Gathering.">
+  <meta name="description" content="Prezzi, portafoglio e previsioni di mercato per le carte fisiche di Magic: The Gathering.">
   <meta name="theme-color" content="#0f1115">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
@@ -30,12 +30,6 @@
     <!-- DASHBOARD -->
     <section id="tab-dashboard" class="tab active">
       <div class="kpis" id="kpis"></div>
-      <div class="notice" id="arena-notice">
-        <strong>Da sapere su Arena:</strong> le carte di MTG Arena <em>non hanno valore in denaro</em>:
-        non si vendono né si scambiano. L'app traccia il mercato delle <strong>carte fisiche</strong>
-        (Cardmarket in €, TCGplayer in $) e delle carte MTGO (tix), e usa Arena come filtro e segnale di domanda.
-        <button class="link" id="dismiss-notice">Ho capito</button>
-      </div>
       <h2>Segnali sulle tue carte</h2>
       <div id="dash-signals" class="list"></div>
       <h2>Opportunità del giorno <small>(scanner automatico)</small></h2>
@@ -45,8 +39,7 @@
     <!-- MARKET -->
     <section id="tab-market" class="tab">
       <form id="search-form" class="search">
-        <input id="search-q" type="search" placeholder="Cerca una carta (es. Ragavan) o una query Scryfall" autocomplete="off">
-        <label class="chk"><input type="checkbox" id="only-arena"> Solo carte presenti su Arena</label>
+        <input id="search-q" type="search" placeholder="Cerca una carta fisica (es. Ragavan) o una query Scryfall" autocomplete="off">
         <button type="submit">Cerca</button>
       </form>
       <div class="presets" id="presets"></div>
@@ -65,8 +58,9 @@
       <div class="kpis" id="pf-kpis"></div>
       <div class="pf-chart-wrap"><div id="pf-alloc"></div></div>
       <div id="pf-list" class="list"></div>
-      <p class="muted small">Il valore netto toglie le commissioni di vendita impostate (Cardmarket ~5% + spedizione,
-        TCGplayer ~13%). Per aggiungere una posizione apri una carta e premi «Aggiungi al portafoglio».</p>
+      <p class="muted small">Il valore di ogni posizione tiene conto della condizione della carta (una Excellent vale
+        circa l'85% di una Near Mint) e il valore netto toglie le commissioni di vendita impostate (Cardmarket ~5% +
+        spedizione, TCGplayer ~13%). Per aggiungere una posizione apri una carta e premi «Aggiungi al portafoglio».</p>
       <div class="row-between">
         <button id="export-pf" class="ghost">Esporta backup</button>
         <label class="ghost file">Importa backup<input type="file" id="import-pf" accept="application/json" hidden></label>
@@ -80,7 +74,6 @@
           <select name="currency">
             <option value="eur">EUR, Cardmarket (trend)</option>
             <option value="usd">USD, TCGplayer (market)</option>
-            <option value="tix">TIX, MTGO (Cardhoarder)</option>
           </select></label>
         <label>Aggiornamento automatico (minuti)
           <input name="refreshMin" type="number" min="5" max="240" step="1"></label>
@@ -95,7 +88,8 @@
       <div class="notice">
         <h3>Come funzionano i dati</h3>
         <ul>
-          <li><strong>Fonte:</strong> API pubblica di Scryfall, che aggrega Cardmarket, TCGplayer e Cardhoarder.
+          <li><strong>Solo carte fisiche:</strong> le ricerche escludono sempre le carte e le stampe solo digitali.</li>
+          <li><strong>Fonte:</strong> API pubblica di Scryfall, che riporta i prezzi di Cardmarket (trend, Near Mint) e TCGplayer.
             I prezzi della fonte vengono aggiornati circa <strong>una volta al giorno</strong>: l'app li controlla di
             continuo e li mostra appena cambiano.</li>
           <li><strong>Storico:</strong> l'app salva una "fotografia" dei prezzi a ogni aggiornamento. Se pubblichi l'app su

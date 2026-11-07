@@ -1,28 +1,25 @@
 # MTG Invest
 
-App web (funziona anche da telefono come app) per **investire nelle carte di Magic: The Gathering**:
-prezzi aggiornati automaticamente, watchlist, portafoglio con profitti e perdite al netto delle commissioni,
-e **previsioni di mercato** con segnali COMPRA / ACCUMULA / MANTIENI / VENDI.
+App web (funziona anche da telefono come app) per **investire nelle carte fisiche di Magic: The Gathering**:
+prezzi di Cardmarket e TCGplayer aggiornati automaticamente, watchlist, portafoglio con profitti e perdite al netto
+di commissioni e condizione della carta, e **previsioni di mercato** con segnali COMPRA / ACCUMULA / MANTIENI / VENDI.
 
-## ⚠️ Da sapere prima di investire: MTG Arena
-
-Le carte di **MTG Arena non hanno valore monetario**: non si vendono, non si scambiano e non esiste un mercato
-secondario (ci sono solo wildcard e gemme). Per guadagnare bisogna operare sul mercato delle **carte fisiche**
-(Cardmarket in Europa, TCGplayer negli USA) o su **MTGO** (tix). L'app:
-
-- traccia i prezzi reali di Cardmarket (€), TCGplayer ($) e MTGO (tix);
-- indica quali carte sono anche su Arena (filtro «Solo carte presenti su Arena»);
-- segna come **NON INVESTIBILE** le carte solo digitali.
+Solo carte fisiche: le ricerche escludono sempre le carte e le stampe che esistono solo in digitale.
 
 ## Funzioni
 
 | Sezione | Cosa fa |
 |---|---|
 | **Dashboard** | Valore del portafoglio, P/L netto, valore previsto, segnali sulle tue carte, scanner con le opportunità del giorno |
-| **Mercato** | Ricerca libera (accetta anche la sintassi di Scryfall) + scanner già pronti: Blue chip Commander, Reserved List, Staple Modern/Legacy, Mai ristampate, Uscite recenti, Su Arena e in carta |
-| **Scheda carta** | Prezzi su tutti i mercati, normale/foil, grafico dello storico con il "cono" di previsione, segnale spiegato fattore per fattore, rialzo minimo per andare in pari, link per comprare |
+| **Mercato** | Ricerca libera (accetta anche la sintassi di Scryfall) + scanner già pronti: Blue chip Commander, Reserved List, Staple Modern/Legacy, Mai ristampate, Uscite recenti, Vintage (prima del 2003), Mitiche giocate sotto 20 |
+| **Scheda carta** | Prezzi Cardmarket (€) e TCGplayer ($), normale/foil, grafico dello storico con il "cono" di previsione, segnale spiegato fattore per fattore, rialzo minimo per andare in pari, tutte le stampe della carta, link per comprare |
 | **Watchlist** | Carte seguite con aggiornamento automatico e notifiche se il prezzo si muove oltre la soglia impostata |
-| **Portafoglio** | Posizioni con prezzo di carico, P/L, allocazione e avviso di concentrazione, export/import del backup |
+| **Portafoglio** | Posizioni con quantità, condizione (MT/NM/EX/GD/LP/PL/PO), prezzo di carico, P/L, allocazione e avviso di concentrazione, export/import del backup |
+
+### Condizione delle carte
+
+Il prezzo di riferimento è quello Near Mint. Il valore di ogni posizione viene corretto con la scala delle condizioni
+di Cardmarket: MT e NM 100%, EX ~85%, GD ~72%, LP ~60%, PL ~45%, PO ~25%. Sono stime medie: i valori cambiano da carta a carta.
 
 ## Il modello di previsione (`model.js`)
 
