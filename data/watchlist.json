@@ -1,0 +1,4 @@
+{
+  "ids": [],
+  "_info": "Incolla qui gli id esportati dall'app (Watchlist → Esporta). La GitHub Action salva i loro prezzi ogni giorno in history.json."
+}

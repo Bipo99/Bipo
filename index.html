@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>MTG Invest</title>
+  <meta name="description" content="Prezzi in tempo reale, portafoglio e previsioni di mercato per le carte di Magic: The Gathering.">
+  <meta name="theme-color" content="#0f1115">
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><img src="icon.svg" alt="" width="28" height="28"> MTG Invest</div>
+    <div class="status"><span id="live-dot" class="dot"></span><span id="last-update">—</span>
+      <button id="refresh-btn" class="ghost" title="Aggiorna ora">⟳</button></div>
+  </header>
+
+  <nav class="tabs" role="tablist">
+    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="market">Mercato</button>
+    <button data-tab="watch">Watchlist</button>
+    <button data-tab="portfolio">Portafoglio</button>
+    <button data-tab="settings">Impostazioni</button>
+  </nav>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section id="tab-dashboard" class="tab active">
+      <div class="kpis" id="kpis"></div>
+      <div class="notice" id="arena-notice">
+        <strong>Da sapere su Arena:</strong> le carte di MTG Arena <em>non hanno valore in denaro</em>:
+        non si vendono né si scambiano. L'app traccia il mercato delle <strong>carte fisiche</strong>
+        (Cardmarket in €, TCGplayer in $) e delle carte MTGO (tix), e usa Arena come filtro e segnale di domanda.
+        <button class="link" id="dismiss-notice">Ho capito</button>
+      </div>
+      <h2>Segnali sulle tue carte</h2>
+      <div id="dash-signals" class="list"></div>
+      <h2>Opportunità del giorno <small>(scanner automatico)</small></h2>
+      <div id="dash-opps" class="list"><p class="muted">Caricamento…</p></div>
+    </section>
+
+    <!-- MARKET -->
+    <section id="tab-market" class="tab">
+      <form id="search-form" class="search">
+        <input id="search-q" type="search" placeholder="Cerca una carta (es. Ragavan) o una query Scryfall" autocomplete="off">
+        <label class="chk"><input type="checkbox" id="only-arena"> Solo carte presenti su Arena</label>
+        <button type="submit">Cerca</button>
+      </form>
+      <div class="presets" id="presets"></div>
+      <div id="market-results" class="list"></div>
+    </section>
+
+    <!-- WATCHLIST -->
+    <section id="tab-watch" class="tab">
+      <div class="row-between"><h2>Watchlist</h2>
+        <button id="export-watch" class="ghost">Esporta per lo storico automatico</button></div>
+      <div id="watch-list" class="list"></div>
+    </section>
+
+    <!-- PORTFOLIO -->
+    <section id="tab-portfolio" class="tab">
+      <div class="kpis" id="pf-kpis"></div>
+      <div class="pf-chart-wrap"><div id="pf-alloc"></div></div>
+      <div id="pf-list" class="list"></div>
+      <p class="muted small">Il valore netto toglie le commissioni di vendita impostate (Cardmarket ~5% + spedizione,
+        TCGplayer ~13%). Per aggiungere una posizione apri una carta e premi «Aggiungi al portafoglio».</p>
+      <div class="row-between">
+        <button id="export-pf" class="ghost">Esporta backup</button>
+        <label class="ghost file">Importa backup<input type="file" id="import-pf" accept="application/json" hidden></label>
+      </div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="tab-settings" class="tab">
+      <form id="settings-form" class="settings">
+        <label>Valuta / mercato di riferimento
+          <select name="currency">
+            <option value="eur">EUR, Cardmarket (trend)</option>
+            <option value="usd">USD, TCGplayer (market)</option>
+            <option value="tix">TIX, MTGO (Cardhoarder)</option>
+          </select></label>
+        <label>Aggiornamento automatico (minuti)
+          <input name="refreshMin" type="number" min="5" max="240" step="1"></label>
+        <label>Commissioni di vendita stimate (%)
+          <input name="feePct" type="number" min="0" max="40" step="0.5"></label>
+        <label>Orizzonte di previsione (giorni)
+          <select name="horizon"><option>7</option><option>30</option><option>90</option><option>180</option></select></label>
+        <label>Avviso se il prezzo cambia oltre (%)
+          <input name="alertPct" type="number" min="1" max="100" step="1"></label>
+        <button type="submit">Salva</button>
+      </form>
+      <div class="notice">
+        <h3>Come funzionano i dati</h3>
+        <ul>
+          <li><strong>Fonte:</strong> API pubblica di Scryfall, che aggrega Cardmarket, TCGplayer e Cardhoarder.
+            I prezzi della fonte vengono aggiornati circa <strong>una volta al giorno</strong>: l'app li controlla di
+            continuo e li mostra appena cambiano.</li>
+          <li><strong>Storico:</strong> l'app salva una "fotografia" dei prezzi a ogni aggiornamento. Se pubblichi l'app su
+            GitHub Pages, la GitHub Action inclusa salva lo storico ogni giorno anche quando l'app è chiusa.</li>
+          <li><strong>Previsioni:</strong> modello che combina i fondamentali della carta (Reserved List, ristampe,
+            domanda in Commander, formati legali, età del set, rarità, fascia di prezzo) con il trend e la volatilità
+            dello storico. Ogni segnale mostra il suo perché.</li>
+          <li><strong>Avvertenza:</strong> sono stime statistiche, non consulenza finanziaria. Le ristampe annunciate
+            da Wizards e i ban possono far crollare un prezzo da un giorno all'altro. Diversifica e non investire
+            soldi che non puoi permetterti di perdere.</li>
+        </ul>
+      </div>
+      <button id="wipe" class="danger">Cancella tutti i dati locali</button>
+    </section>
+  </main>
+
+  <dialog id="card-dialog"><div id="card-detail"></div></dialog>
+  <div id="toast" class="toast" hidden></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
