@@ -64,7 +64,7 @@ function fc(card, { foil = false, horizon = S.settings.horizon, tech, series = n
   return forecast({
     card, price: priceOf(card, foil), series,
     tech: tech !== undefined ? tech : statsToTech(statsOf(card)),
-    horizonDays: Number(horizon), feePct: S.settings.feePct / 100,
+    horizonDays: Number(horizon), feePct: S.settings.feePct / 100, money: v => money(v),
   });
 }
 
@@ -108,12 +108,14 @@ function cardRow(card, { foil = false, extra = '' } = {}) {
     card.flags & FLAG.upcoming ? '<span class="tag pre">Preordine</span>' : '',
     foil ? '<span class="tag foil">Foil</span>' : '',
   ].join('');
+  const reason = f.drivers?.[0];
+  const why = extra || (reason ? `<div class="why">${esc(reason.label)} ${pct(reason.pct)} · previsione ${pct(f.drift)}</div>` : '');
   return `<div class="row" data-open="${card.id}">
     <img class="thumb" loading="lazy" decoding="async" src="${D.imageUrl(card.id)}" alt="" onerror="this.style.visibility='hidden'">
     <div class="cell">
       <div class="name">${esc(card.name)} ${tags}</div>
       <div class="sub">${esc(card.setName)} · #${esc(card.cn)} · ${esc(card.rarity)}</div>
-      ${extra}
+      ${why}
     </div>
     <div class="nums">
       <div class="price">${money(q.v, q.currency)}${q.foil && !foil ? ' <span class="tag foil">foil</span>' : ''}</div>
@@ -125,6 +127,71 @@ function cardRow(card, { foil = false, extra = '' } = {}) {
 }
 const kpi = (label, value, sub = '', cls = '') =>
   `<div class="kpi"><div class="kl">${label}</div><div class="kv ${cls}">${value}</div><div class="ks">${sub}</div></div>`;
+
+// ---------------------------------------------------------------- "perché" del segnale
+// Spiega la decisione, non solo il punteggio: che cosa spinge la previsione, se i conti
+// tornano al netto delle commissioni, quali sono i rischi e che cosa conviene fare.
+function whyBlock(f, card) {
+  const w = f.why;
+  const maxAbs = Math.max(...f.drivers.map(d => Math.abs(d.pct)), 0.01);
+  const bars = f.drivers.map(d => {
+    const width = (Math.abs(d.pct) / maxAbs) * 50;
+    const up = d.pct > 0;
+    return `<div class="driver">
+      <div class="dl">${esc(d.label)}${d.detail ? `<span class="hint"> — ${esc(d.detail)}</span>` : ''}</div>
+      <div class="dbar"><i class="${up ? 'up' : 'down'}" style="width:${width.toFixed(1)}%;margin-left:${up ? 50 : 50 - width.toFixed(1)}%"></i></div>
+      <div class="dv ${tone(d.pct)}">${pct(d.pct)}</div>
+    </div>`;
+  }).join('');
+
+  const ok = f.netEdge > 0;
+  return `<div class="why-box">
+    <h3>Perché ${verbFor(f.signal)}</h3>
+    <p class="verdict">${esc(w.verdict)}</p>
+
+    ${f.drivers.length ? `<div class="why-sec">
+      <h4>Che cosa spinge la previsione</h4>
+      <div class="drivers">${bars}</div>
+      <p class="hint">I fattori si combinano nella previsione finale di ${pct(f.drift)} a ${f.horizonDays} giorni.
+        I pesi non li ho scelti io: sono stimati sui prezzi reali e verificati su carte mai usate per stimarli.</p>
+    </div>` : ''}
+
+    <div class="why-sec">
+      <h4>I conti, al netto delle commissioni</h4>
+      <table class="ledger"><tbody>
+        <tr><td>Prezzo oggi</td><td class="n">${money(priceOf(card, false))}</td></tr>
+        <tr><td>Prezzo atteso fra ${f.horizonDays} giorni</td><td class="n ${tone(f.drift)}">${money(f.expected)} (${pct(f.drift)})</td></tr>
+        <tr><td>Serve solo per rientrare delle commissioni (${S.settings.feePct}%)</td><td class="n">${pct(f.breakEven)}</td></tr>
+        <tr class="total"><td>Margine netto</td><td class="n ${tone(f.netEdge)}">${pct(f.netEdge)} ${ok ? '✓' : '✗'}</td></tr>
+        ${w.maxBuy != null ? `<tr><td>Prezzo massimo da pagare perché convenga</td><td class="n">${money(w.maxBuy)}</td></tr>` : ''}
+        ${w.netNow != null ? `<tr><td>Se vendi oggi, incassi netti</td><td class="n">${money(w.netNow)}</td></tr>` : ''}
+      </tbody></table>
+    </div>
+
+    ${w.actions.length ? `<div class="why-sec">
+      <h4>Che cosa farei</h4>
+      <ul class="todo">${w.actions.map(a => `<li>${esc(a)}</li>`).join('')}</ul>
+    </div>` : ''}
+
+    <div class="why-cols">
+      ${w.strengths.length ? `<div class="why-sec"><h4>A favore</h4>
+        <ul class="bullets good">${w.strengths.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+      ${w.risks.length ? `<div class="why-sec"><h4>Rischi</h4>
+        <ul class="bullets bad">${w.risks.map(x => `<li>${esc(x)}</li>`).join('')}</ul></div>` : ''}
+    </div>
+
+    <details class="why-sec">
+      <summary>Dettaglio del punteggio di qualità (${f.fund.score}/100)</summary>
+      <ul class="factors">${f.fund.factors.map(x =>
+        `<li class="${x.pts > 0 ? 'up' : x.pts < 0 ? 'down' : ''}"><b>${x.pts > 0 ? '+' : ''}${x.pts}</b> ${esc(x.label)}</li>`).join('')}</ul>
+    </details>
+  </div>`;
+}
+const verbFor = sig => ({
+  'COMPRA': 'comprarla', 'ACCUMULA': 'accumularla piano', 'MANTIENI': 'tenerla ferma',
+  'VENDI / EVITA': 'venderla o evitarla', 'NON INVESTIBILE': 'lasciarla perdere',
+  'SENZA PREZZO': 'non si può decidere',
+}[sig] || 'questo segnale');
 
 // ---------------------------------------------------------------- portafoglio
 function portfolioStats() {
@@ -397,11 +464,7 @@ async function openCard(id) {
           <div>${series === null ? '<div class="chart-empty">Carico lo storico reale…</div>' : lineChart(series, { proj })}</div>
           ${st ? `<p class="hint">Storico reale di ${st[5]} giorni · 30 giorni ${pct(st[0])} · 90 giorni ${pct(st[1])} ·
             distanza dal massimo ${pct(st[2])} · volatilità mensile ${pct(st[3], false)}</p>` : ''}
-          <div>
-            <h3>Perché questo segnale</h3>
-            <ul class="factors">${f.fund.factors.slice(0, 8).map(x =>
-              `<li class="${x.pts > 0 ? 'up' : x.pts < 0 ? 'down' : ''}"><b>${x.pts > 0 ? '+' : ''}${x.pts}</b> ${esc(x.label)}</li>`).join('')}</ul>
-          </div>
+          ${whyBlock(f, card)}
           <div class="actions">
             <button data-watch>${S.watch.includes(card.id) ? '★ Seguita' : '☆ Segui'}</button>
             <a class="btn ghost" target="_blank" rel="noopener" href="https://www.cardmarket.com/it/Magic/Products/Search?searchString=${encodeURIComponent(card.name)}">Cardmarket ↗</a>

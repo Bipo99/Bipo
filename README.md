@@ -63,8 +63,12 @@ Due cose vanno dette con chiarezza:
    Il vantaggio del modello è piccolo. Reale, misurato, ma piccolo.
 2. **Inseguire il trend fa perdere soldi.** Il risultato più netto della verifica è il coefficiente
    negativo su `m30`: una carta che è appena corsa tende a rientrare, non a continuare. Il modello
-   è quindi contrarian, non trend-following — ed è il contrario di quello che fa la maggior parte
-   delle persone sui gruppi di compravendita.
+   è quindi contrarian sul breve, ed è il contrario di quello che fa la maggior parte delle persone
+   sui gruppi di compravendita.
+3. **Attenzione però a non confondere rimbalzo e declino.** Il coefficiente su `fromHigh` è
+   positivo, cioè dice l'opposto sul medio periodo: una carta ferma molto sotto il massimo degli
+   ultimi mesi tende a restare debole. Le due cose convivono — l'eccesso di una settimana rientra,
+   un calo strutturale di tre mesi no — e il modello le pesa entrambe.
 
 L'intervallo «±1σ» mostrato nell'app contiene il prezzo reale nel 70,6% dei casi, contro il 68%
 teorico: l'incertezza dichiarata è onesta.

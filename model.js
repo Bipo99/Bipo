@@ -195,7 +195,7 @@ export function features(card, price, tech, fund) {
 }
 
 export function forecast({ card, price, series = null, tech: techIn = null, horizonDays = 30,
-                           feePct = 0.08, now = Date.now(), fit = FIT }) {
+                           feePct = 0.08, now = Date.now(), fit = FIT, money = defaultMoney }) {
   const fund = fundamentals(card, price, now);
   // `tech` può arrivare già pronto (statistiche dell'indice) oppure essere calcolato dalla serie.
   const tech = techIn ?? (series && series.length ? technicals(series) : null);
@@ -203,10 +203,41 @@ export function forecast({ card, price, series = null, tech: techIn = null, hori
   const notes = [];
 
   // Previsione = combinazione lineare stimata sui dati reali (rendimento logaritmico a 30 giorni).
-  let driftLog = fit.bias + fit.m30 * x.m30 + fit.m90 * x.m90 + fit.score * x.score +
-                 fit.fromHigh * x.fromHigh + fit.logPrice * x.logPrice;
-  if (!tech) { driftLog = fit.bias + fit.score * x.score; notes.push('Storico troppo corto: pesano solo i fondamentali'); }
-  driftLog = clamp(Number.isFinite(driftLog) ? driftLog : 0, fit.maxDrift);
+  // Teniamo separato il contributo di ogni variabile: è ciò che permette di spiegare il segnale.
+  const terms = [
+    { key: 'bias', v: fit.bias, label: 'Andamento di fondo del mercato', detail: 'media di tutte le carte' },
+    { key: 'm30', v: fit.m30 * x.m30, label: 'Ritorno verso la media',
+      detail: tech?.ch30 == null ? ''
+        : tech.ch30 > 0.01 ? `nell'ultimo mese è salita del ${signed(tech.ch30).slice(1)}, e chi corre tende a rientrare`
+        : tech.ch30 < -0.01 ? `nell'ultimo mese ha perso il ${signed(-tech.ch30).slice(1)}, e dopo un calo recente spesso recupera`
+        : 'nell\'ultimo mese è rimasta ferma' },
+    { key: 'm90', v: fit.m90 * x.m90, label: 'Andamento dei tre mesi',
+      detail: tech?.ch90 == null ? '' : `sui 90 giorni ${signed(tech.ch90)}` },
+    { key: 'score', v: fit.score * x.score, label: 'Qualità dei fondamentali',
+      detail: `punteggio ${fund.score}/100: ristampe, domanda, formati, età del set` },
+    { key: 'fromHigh', v: fit.fromHigh * x.fromHigh, label: 'Distanza dal massimo recente',
+      detail: !tech ? ''
+        : tech.fromHigh < -0.03
+          ? `sta il ${signed(-tech.fromHigh).slice(1)} sotto il massimo degli ultimi mesi, e chi resta lontano dal massimo di solito fatica`
+          : 'è vicina ai suoi massimi recenti, che storicamente è un buon segno' },
+    { key: 'logPrice', v: fit.logPrice * x.logPrice, label: 'Fascia di prezzo',
+      detail: 'in percentuale le carte più costose si muovono meno di quelle economiche' },
+  ];
+  let driftLog = terms.reduce((a, t) => a + t.v, 0);
+  if (!tech) {
+    for (const t of terms) if (t.key !== 'bias' && t.key !== 'score') t.v = 0;
+    driftLog = fit.bias + fit.score * x.score;
+    notes.push('Storico troppo corto: pesano solo i fondamentali');
+  }
+  if (!Number.isFinite(driftLog)) { driftLog = 0; for (const t of terms) t.v = 0; }
+  // Se la previsione viene tagliata al massimo consentito, riduciamo i contributi in proporzione,
+  // così quello che l'utente legge somma esattamente a quello che l'app mostra.
+  const clamped = clamp(driftLog, fit.maxDrift);
+  if (driftLog !== 0 && clamped !== driftLog) {
+    const k = clamped / driftLog;
+    for (const t of terms) t.v *= k;
+  }
+  driftLog = clamped;
 
   if (tech && tech.ch30 > 0.5) notes.push('Salita molto rapida nell\'ultimo mese: storicamente una parte rientra');
   if (tech && tech.ch30 < -0.4 && fund.score >= 60) notes.push('Forte calo su una carta solida: possibile rimbalzo');
@@ -235,6 +266,87 @@ export function forecast({ card, price, series = null, tech: techIn = null, hori
   else { signal = 'MANTIENI'; tone = 'flat'; }
 
   const confidence = Math.round(100 * Math.min(0.8, 0.25 + wTech * 0.55));
-  return { signal, tone, drift, vol, expected, low, high, breakEven, netEdge, fund, tech, notes,
-           confidence, horizonDays, wTech, features: x };
+  const out = { signal, tone, drift, vol, expected, low, high, breakEven, netEdge, fund, tech, notes,
+                confidence, horizonDays, wTech, features: x,
+                drivers: terms.filter(t => Math.abs(t.v) > 0.0015)
+                  .map(t => ({ ...t, pct: Math.exp(t.v * scale) - 1 }))
+                  .sort((a, b) => Math.abs(b.pct) - Math.abs(a.pct)) };
+  out.why = explain(out, card, price, feePct, money);
+  return out;
+}
+
+const signed = v => (v > 0 ? '+' : '') + (v * 100).toFixed(1).replace('.', ',') + '%';
+
+// Perché comprare, tenere, vendere o lasciar perdere: la motivazione in chiaro,
+// costruita dagli stessi numeri che producono il segnale.
+export function explain(f, card, price, feePct, fmtMoney = defaultMoney) {
+  const risks = [], strengths = [], actions = [];
+  const t = f.tech;
+
+  // --- rischi
+  if (has(card, FLAG.upcoming))
+    risks.push('È in preordine: il prezzo di prevendita è il più inaffidabile che esista, e di solito scende dopo l\'uscita.');
+  else if (card.released) {
+    const age = (Date.now() - Date.parse(card.released)) / DAY;
+    if (age < 60) risks.push('Il set è uscito da meno di due mesi: si aprono ancora buste, quindi l\'offerta cresce e il prezzo tende a scendere.');
+    else if (age < 180) risks.push('Set recente: l\'offerta sul mercato sta ancora aumentando.');
+  }
+  if (has(card, FLAG.reserved)) strengths.push('È nella Reserved List: Wizards si è impegnata a non ristamparla mai. È la protezione più forte che una carta possa avere.');
+  else if (has(card, FLAG.reprint)) risks.push('È già stata ristampata una volta: può succedere di nuovo, e una ristampa annunciata taglia il prezzo nel giro di giorni.');
+  else risks.push('Non è nella Reserved List: una ristampa resta possibile in qualsiasi momento e nessun modello la vede arrivare.');
+
+  if (isBanned(card, 'commander')) risks.push('È bandita in Commander, il formato che muove più mercato: la domanda resta compressa.');
+  if (isLegal(card, 'commander') && card.edhrec && card.edhrec <= 1500)
+    strengths.push(`È fra le carte più giocate in Commander (EDHREC #${card.edhrec}): la domanda è reale e continua.`);
+  if (isLegal(card, 'standard')) risks.push('È legale in Standard: parte del prezzo è domanda temporanea, che sparisce alla rotazione.');
+  if (has(card, FLAG.promo)) risks.push('È una stampa promozionale: mercato più sottile, prezzi più ballerini.');
+  if (price != null && price < 3) risks.push('Prezzo basso: spedizione e commissioni si mangiano quasi tutto il margine.');
+  if (t && t.coverage < 0.7) risks.push('Si scambia poco: nei mesi scorsi è rimasta senza quotazione per molti giorni, quindi rivenderla può richiedere tempo.');
+  if (t && t.dailyVol * Math.sqrt(30) > 0.25) risks.push(`Molto volatile: oscilla di circa ${signed(t.dailyVol * Math.sqrt(30)).replace('+', '')} al mese.`);
+  if (!t) risks.push('Senza storico dei prezzi la previsione si regge solo sui fondamentali: trattala come un\'indicazione debole.');
+
+  // --- cosa fare, in concreto
+  const fee = feePct;
+  const maxBuy = f.expected != null ? f.expected * (1 - fee) : null;   // oltre questo prezzo il margine sparisce
+  const netNow = price != null ? price * (1 - fee) : null;
+
+  let verdict;
+  const top = f.drivers[0];
+  const because = top ? `${top.label.toLowerCase()}${top.detail ? ` (${top.detail})` : ''}` : 'i fondamentali';
+
+  if (f.signal === 'NON INVESTIBILE') {
+    verdict = 'Sotto 1 € non esiste margine: fra spedizione e commissioni ci rimetti comunque. Queste carte si giocano, non si investono.';
+    actions.push('Lasciala perdere come investimento.');
+  } else if (f.signal === 'SENZA PREZZO') {
+    verdict = 'Non c\'è una quotazione su cui ragionare: senza prezzo non si può né valutare né decidere.';
+    actions.push('Controlla un\'altra stampa della stessa carta, dalla tabella qui sotto.');
+  } else if (f.signal === 'COMPRA') {
+    verdict = `Il guadagno atteso supera i costi di vendita con un margine chiaro. A spingere è soprattutto ${because}.`;
+    actions.push(`Non pagarla più di ${fmtMoney(maxBuy)}: oltre quella cifra il margine sparisce anche se la previsione è giusta.`);
+    actions.push(`Obiettivo di rivendita: ${fmtMoney(f.expected)} entro ${f.horizonDays} giorni. Se arriva prima, vendi prima.`);
+    actions.push('Metti un limite di perdita mentale: se scende sotto ' + fmtMoney(f.low) + ', la tesi è sbagliata.');
+  } else if (f.signal === 'ACCUMULA') {
+    verdict = `Il margine c'è ma è sottile: copre a malapena le commissioni. Pesa più di tutto ${because}.`;
+    actions.push('Comprane poche per volta invece che tutte insieme, e solo se la trovi sotto il prezzo di mercato.');
+    actions.push(`Il conto torna solo pagandola meno di ${fmtMoney(maxBuy)}.`);
+  } else if (f.signal === 'VENDI / EVITA') {
+    verdict = `La previsione è negativa o la qualità è troppo bassa. Il fattore che pesa di più è ${because}.`;
+    if (netNow != null) actions.push(`Se ce l'hai, vendendo ora incassi circa ${fmtMoney(netNow)} netti a copia.`);
+    actions.push('Se non ce l\'hai, non comprarla a questo prezzo.');
+    if (f.low != null) actions.push(`Tornerebbe interessante solo molto più in basso, verso ${fmtMoney(f.low)}.`);
+  } else {
+    verdict = (f.drift >= 0
+      ? `Il rialzo atteso (${signed(f.drift)}) non copre il ${signed(f.breakEven)} che serve solo per rientrare delle commissioni.`
+      : `La previsione è leggermente negativa (${signed(f.drift)}), e comunque non basterebbe a coprire il ${signed(f.breakEven)} di commissioni.`) +
+      ` Nessun motivo per muoversi: pesa soprattutto ${because}.`;
+    actions.push('Se ce l\'hai, tienila: venderla ora significa pagare le commissioni senza motivo.');
+    actions.push(`Diventerebbe un acquisto sensato sotto ${fmtMoney(maxBuy)}.`);
+  }
+
+  return { verdict, risks, strengths, actions, maxBuy, netNow };
+}
+
+function defaultMoney(v) {
+  if (v == null || !Number.isFinite(v)) return '—';
+  return v.toFixed(2).replace('.', ',') + ' €';
 }

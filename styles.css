@@ -211,3 +211,37 @@ tr.pick:hover td { background: var(--panel2); }
   .row .nums { grid-column: 2 / 4; justify-items: start; grid-auto-flow: column; gap: 8px; align-items: baseline; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* ---------------------------------------------------------------- "perché" del segnale */
+.why-box { border: 1px solid var(--line); border-radius: 12px; padding: 13px; display: grid; gap: 13px; background: var(--panel2); }
+.why-box h3 { font-size: 1rem; }
+.why-box h4 { margin: 0 0 6px; font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 650; }
+.verdict { margin: 0; font-size: .95rem; line-height: 1.5; }
+.why-sec { display: block; }
+.why-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 13px; }
+
+.drivers { display: grid; gap: 5px; }
+.driver { display: grid; grid-template-columns: minmax(0, 1fr) 130px 62px; align-items: center; gap: 9px; font-size: .84rem; }
+.driver .dl { min-width: 0; }
+.driver .dbar { height: 9px; background: var(--panel); border-radius: 3px; position: relative; overflow: hidden; border: 1px solid var(--line); }
+.driver .dbar::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--line2); }
+.driver .dbar i { display: block; height: 100%; border-radius: 2px; }
+.driver .dbar i.up { background: var(--up); } .driver .dbar i.down { background: var(--down); }
+.driver .dv { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.ledger { font-size: .86rem; }
+.ledger td { border-bottom: 1px solid var(--line); padding: 5px 2px; white-space: normal; }
+.ledger tr.total td { font-weight: 700; border-bottom: 0; border-top: 2px solid var(--line2); }
+
+.todo, .bullets { margin: 0; padding-left: 18px; display: grid; gap: 5px; font-size: .86rem; line-height: 1.45; }
+.todo li::marker { color: var(--accent); }
+.bullets.good li::marker { color: var(--up); }
+.bullets.bad li::marker { color: var(--down); }
+.why-box details > summary { cursor: pointer; font-size: .82rem; color: var(--muted); }
+.why-box details[open] > summary { margin-bottom: 7px; }
+
+@media (max-width: 640px) {
+  .why-cols { grid-template-columns: 1fr; }
+  .driver { grid-template-columns: minmax(0, 1fr) 56px; }
+  .driver .dbar { display: none; }
+}
