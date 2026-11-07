@@ -1,0 +1,8 @@
+# I dati sono un prodotto della build (circa 25 MB): vengono rigenerati dalla
+# GitHub Action a ogni pubblicazione, non vanno versionati.
+data/index*.json.gz
+data/hist/
+data/meta.json
+data/*.log
+node_modules/
+.DS_Store

@@ -1,66 +1,106 @@
 # MTG Invest
 
-App web (funziona anche da telefono come app) per **investire nelle carte fisiche di Magic: The Gathering**:
-prezzi di Cardmarket e TCGplayer aggiornati automaticamente, watchlist, portafoglio con profitti e perdite al netto
-di commissioni e condizione della carta, e **previsioni di mercato** con segnali COMPRA / ACCUMULA / MANTIENI / VENDI.
+Strumento di analisi per chi investe in **carte fisiche di Magic: The Gathering**.
+Copre **tutte le stampe in carta**, varianti e preordini compresi, con prezzi reali, storico reale
+e un modello di previsione i cui coefficienti sono **stimati sui dati e verificati fuori campione**.
 
-Solo carte fisiche: le ricerche escludono sempre le carte e le stampe che esistono solo in digitale.
+Nessuna carta digitale: Arena e MTGO sono esclusi, perché lì non esiste un mercato in denaro.
 
-## Funzioni
+## Che cosa c'è dentro
 
 | Sezione | Cosa fa |
 |---|---|
-| **Dashboard** | Valore del portafoglio, P/L netto, valore previsto, segnali sulle tue carte, scanner con le opportunità del giorno |
-| **Mercato** | Ricerca libera (accetta anche la sintassi di Scryfall) + scanner già pronti: Blue chip Commander, Reserved List, Staple Modern/Legacy, Mai ristampate, Uscite recenti, Vintage (prima del 2003), Mitiche giocate sotto 20 |
-| **Scheda carta** | Prezzi Cardmarket (€) e TCGplayer ($), normale/foil, grafico dello storico con il "cono" di previsione, segnale spiegato fattore per fattore, rialzo minimo per andare in pari, tutte le stampe della carta, link per comprare |
-| **Watchlist** | Carte seguite con aggiornamento automatico e notifiche se il prezzo si muove oltre la soglia impostata |
-| **Portafoglio** | Posizioni con quantità, condizione (MT/NM/EX/GD/LP/PL/PO), prezzo di carico, P/L, allocazione e avviso di concentrazione, export/import del backup |
+| **Radar** | Indice del mercato a 90 giorni, carte in maggiore salita e discesa, occasioni secondo il modello, preordini e uscite recenti |
+| **Mercato** | Ricerca e filtri su tutte le stampe (prezzo, rarità, Reserved List, preordini, Commander), ordinabili anche per previsione netta |
+| **Scheda carta** | Prezzi Cardmarket ed eBay/TCGplayer, grafico dello storico reale con cono di previsione, fattori del segnale uno per uno, **tutte le stampe della stessa carta** a confronto |
+| **Watchlist** | Carte seguite, prezzi ricontrollati in continuo e notifica quando una si muove oltre la soglia |
+| **Portafoglio** | Posizioni con quantità, **condizione** (MT/NM/EX/GD/LP/PL/PO) e prezzo di carico, P/L al netto delle commissioni, allocazione e avviso di concentrazione |
+| **Modello** | Il rapporto di verifica completo: quanto il modello ci prende, dove sbaglia, e quanto hanno reso davvero le sue previsioni |
 
-### Condizione delle carte
+## I dati sono reali
 
-Il prezzo di riferimento è quello Near Mint. Il valore di ogni posizione viene corretto con la scala delle condizioni
-di Cardmarket: MT e NM 100%, EX ~85%, GD ~72%, LP ~60%, PL ~45%, PO ~25%. Sono stime medie: i valori cambiano da carta a carta.
+| Cosa | Fonte | Dimensione |
+|---|---|---|
+| Carte e prezzi di oggi | [Scryfall](https://scryfall.com/docs/api) (bulk `default_cards`) | ~103.500 stampe in carta, ~894 set |
+| Storico giornaliero dei prezzi | [MTGJSON](https://mtgjson.com) (`AllPrices`) | ~100.800 stampe, 100 giorni |
+| Prezzi in diretta | API di Scryfall, dal browser | solo le carte che segui |
 
-## Il modello di previsione (`model.js`)
+L'indice completo viene scaricato a parti (la prima rende l'app subito utilizzabile) e tenuto in
+cache nel browser; lo storico è diviso in 256 blocchi e si scarica solo quello della carta aperta.
+Risultato: avvio in meno di un secondo e ricerca fra 103.000 stampe in circa 10 millisecondi.
 
-Trasparente e verificabile, nessuna scatola nera:
+**Aggiornamento continuo.** Scryfall e MTGJSON rinfrescano i listini all'incirca una volta al
+giorno. La GitHub Action ricostruisce i dati **ogni 6 ore** e ripubblica il sito, così ogni
+variazione entra poche ore dopo che esce; l'app, mentre è aperta, ricontrolla da sola i prezzi
+delle carte che segui ogni 10 minuti e quando torni sulla scheda.
 
-1. **Fondamentali (0–100)**: Reserved List (mai ristampabile), ristampe, domanda in Commander (classifica EDHREC),
-   formati in cui è legale, ban, rarità, età del set (le uscite recenti tendono a scendere, i set fuori stampa a salire),
-   fascia di prezzo (sotto 1 €/$ le commissioni si mangiano il margine).
-2. **Tecnica**: regressione sul log-prezzo (trend), volatilità, momentum con medie mobili esponenziali (EMA 5 contro EMA 20),
-   correzione per i rialzi troppo rapidi (mean reversion).
-3. **Combinazione**: il peso del trend cresce con la lunghezza e la pulizia dello storico; altrimenti decidono i fondamentali.
-4. **Segnale**: COMPRA solo se il rialzo atteso supera il **break-even delle commissioni** di almeno il 2%.
+## Il modello, e quanto vale davvero
 
-> Sono stime statistiche, **non consulenza finanziaria**. Ristampe annunciate e ban possono far crollare un prezzo
-> in un giorno. Diversifica e investi solo quello che puoi permetterti di perdere.
+`scripts/backtest.mjs` stima il modello e lo verifica col metodo walk-forward: a ogni data usa
+**solo il passato**, prevede a 30 giorni e confronta con quello che è successo. La stima avviene su
+metà delle carte, la verifica sull'altra metà, **mai usata per stimarlo**.
 
-## Dati e "tempo reale"
+Risultati dell'ultima verifica (~16.000 casi fuori campione):
 
-- Fonte: [API di Scryfall](https://scryfall.com/docs/api), gratuita, senza chiave. Scryfall aggiorna i prezzi
-  **circa una volta al giorno**: l'app li ricontrolla ogni N minuti (di default 15) e mostra subito ogni variazione.
-- Lo **storico** viene salvato nel browser a ogni aggiornamento.
-- Per avere uno storico anche quando l'app è chiusa c'è la GitHub Action `.github/workflows/snapshot.yml`:
-  ogni giorno salva i prezzi delle carte in `data/watchlist.json` dentro `data/history.json`, e l'app lo carica in automatico.
+| modello | errore medio | meglio del «non cambia» | direzione giusta |
+|---|---|---|---|
+| non cambia niente | 8,8% | — | — |
+| segui il trend | 13,6% | −54,1% | 43,8% |
+| solo fondamentali | 9,5% | −8,4% | 48,8% |
+| **modello stimato** | **8,8%** | **+0,5%** | **53,5%** |
 
-## Avvio
+E, soprattutto, quanto hanno reso davvero le sue previsioni a 30 giorni:
 
-Non c'è niente da installare: è HTML, CSS e JavaScript puro.
+| previsione | resa media reale | casi |
+|---|---|---|
+| in salita | **+9,6%** | 511 |
+| stabile | +1,0% | 14.553 |
+| in calo | **−5,0%** | 1.221 |
+
+Due cose vanno dette con chiarezza:
+
+1. **Il mercato delle carte a 30 giorni è quasi imprevedibile**: la variazione mediana è 0,0%.
+   Il vantaggio del modello è piccolo. Reale, misurato, ma piccolo.
+2. **Inseguire il trend fa perdere soldi.** Il risultato più netto della verifica è il coefficiente
+   negativo su `m30`: una carta che è appena corsa tende a rientrare, non a continuare. Il modello
+   è quindi contrarian, non trend-following — ed è il contrario di quello che fa la maggior parte
+   delle persone sui gruppi di compravendita.
+
+L'intervallo «±1σ» mostrato nell'app contiene il prezzo reale nel 70,6% dei casi, contro il 68%
+teorico: l'incertezza dichiarata è onesta.
+
+> Previsioni statistiche, **non consulenza finanziaria**. Ristampe annunciate e ban possono
+> dimezzare un prezzo in un giorno e nessun modello li vede arrivare. Non investire soldi che non
+> puoi permetterti di perdere.
+
+## Pubblicare il sito
+
+Il repository si pubblica da sé su **GitHub Pages**: `.github/workflows/pages.yml` scarica i dati,
+ristima il modello, lancia i test e pubblica. Parte a ogni push, ogni 6 ore e a mano da *Actions →
+Run workflow*. Alla prima esecuzione attiva Pages da solo (`enablement: true`); se GitHub lo
+rifiuta, basta impostare una volta *Settings → Pages → Source: GitHub Actions*.
+
+> Pages richiede un repository pubblico, oppure un piano GitHub Pro/Team se resta privato.
+
+## Lavorarci in locale
 
 ```bash
-python3 -m http.server 8000   # poi apri http://localhost:8000
+node scripts/build-data.mjs      # scarica i dati reali in data/ (~25 MB, circa 1 minuto)
+node scripts/backtest.mjs --write # ristima il modello e aggiorna i coefficienti in model.js
+node --test tests/*.test.mjs      # test
+python3 -m http.server 8000       # poi apri http://localhost:8000
 ```
 
-### Pubblicarla online (gratis) con GitHub Pages
+La cartella `data/` non è versionata: è un prodotto della build.
 
-1. Su GitHub apri il repository: *Settings → Pages → Deploy from a branch* e scegli il branch e la cartella `/ (root)`.
-2. Apri l'URL che GitHub ti dà; dal telefono usa «Aggiungi a schermata Home».
-3. Storico automatico: nell'app vai su *Watchlist → Esporta per lo storico automatico*, copia l'elenco `ids`
-   in `data/watchlist.json` e fai commit. La Action gira ogni giorno (puoi anche lanciarla a mano da *Actions*).
+## Struttura
 
-## Test
-
-```bash
-node --test tests/*.test.mjs
+```
+index.html  app.js  styles.css      interfaccia
+model.js                            previsioni: fondamentali + coefficienti stimati
+lib/data.js                         indice, storico, cache e prezzi in diretta
+scripts/build-data.mjs              costruisce indice e storico dalle fonti
+scripts/backtest.mjs                stima, verifica e scrive i coefficienti
+scripts/lib/                        client Scryfall, lettori in streaming di MTGJSON
+tests/                              test del modello
 ```

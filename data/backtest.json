@@ -1,0 +1,75 @@
+{
+ "run": "2026-11-07T15:07:16.002Z",
+ "horizon": 30,
+ "minPrice": 2,
+ "dataAxis": {
+  "start": "2026-07-31",
+  "days": 100
+ },
+ "samples": 32798,
+ "train": 16513,
+ "test": 16285,
+ "dropped": 28,
+ "marketMoveMedian": 0,
+ "fit": {
+  "bias": 0.0094068778365762,
+  "m30": -0.24083792973291626,
+  "m90": 0,
+  "score": 0.04265982150574312,
+  "fromHigh": 0.12273994537165263,
+  "logPrice": -0.02618989645343523
+ },
+ "models": {
+  "nessuna variazione": {
+   "mae": 0.08795881869922424,
+   "skill": 0,
+   "direction": 0,
+   "cases": 0
+  },
+  "segui il trend": {
+   "mae": 0.1355263051353819,
+   "skill": -0.5407926929852822,
+   "direction": 0.43798015961810993,
+   "cases": 13407
+  },
+  "solo fondamentali": {
+   "mae": 0.09534234378616621,
+   "skill": -0.08394297690820496,
+   "direction": 0.4883396173718754,
+   "cases": 14322
+  },
+  "modello stimato": {
+   "mae": 0.08752846694752993,
+   "skill": 0.004892650425034728,
+   "direction": 0.5345893719806764,
+   "cases": 10350
+  }
+ },
+ "quality": {
+  "mae": 0.08752846694752993,
+  "skill": 0.004892650425034728,
+  "direction": 0.5345893719806764,
+  "coverage": 0.7062941357077065,
+  "samples": 16285,
+  "cards": 8350,
+  "horizon": 30,
+  "beatsNaive": true
+ },
+ "byBucket": {
+  "previsto stabile": {
+   "n": 14553,
+   "mean": 0.009598075493987338,
+   "median": 0
+  },
+  "previsto in calo": {
+   "n": 1221,
+   "mean": -0.0503202028703801,
+   "median": -0.052380952380952424
+  },
+  "previsto in salita": {
+   "n": 511,
+   "mean": 0.09588944282284366,
+   "median": 0.08561643835616438
+  }
+ }
+}

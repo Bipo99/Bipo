@@ -4,109 +4,141 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>MTG Invest</title>
-  <meta name="description" content="Prezzi, portafoglio e previsioni di mercato per le carte fisiche di Magic: The Gathering.">
-  <meta name="theme-color" content="#0f1115">
+  <meta name="description" content="Prezzi reali, portafoglio e previsioni di mercato per tutte le carte fisiche di Magic: The Gathering.">
+  <meta name="theme-color" content="#101217">
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="preconnect" href="https://cards.scryfall.io" crossorigin>
+  <link rel="preconnect" href="https://api.scryfall.com">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="top">
-    <div class="brand"><img src="icon.svg" alt="" width="28" height="28"> MTG Invest</div>
-    <div class="status"><span id="live-dot" class="dot"></span><span id="last-update">—</span>
-      <button id="refresh-btn" class="ghost" title="Aggiorna ora">⟳</button></div>
+    <a class="brand" href="#radar"><img src="icon.svg" alt="" width="26" height="26"><span>MTG Invest</span></a>
+    <form id="quick-search" class="quick" role="search">
+      <input id="q" type="search" placeholder="Cerca fra tutte le carte in carta…" autocomplete="off" spellcheck="false" aria-label="Cerca una carta">
+    </form>
+    <div class="status">
+      <select id="currency" aria-label="Valuta">
+        <option value="eur">€ Cardmarket</option>
+        <option value="usd">$ TCGplayer</option>
+      </select>
+      <button id="refresh" class="icon" title="Aggiorna i prezzi ora" aria-label="Aggiorna i prezzi ora">⟳</button>
+      <span id="live" class="dot" title="Stato aggiornamento"></span>
+    </div>
   </header>
 
   <nav class="tabs" role="tablist">
-    <button data-tab="dashboard" class="active">Dashboard</button>
+    <button data-tab="radar" class="active">Radar</button>
     <button data-tab="market">Mercato</button>
     <button data-tab="watch">Watchlist</button>
     <button data-tab="portfolio">Portafoglio</button>
-    <button data-tab="settings">Impostazioni</button>
+    <button data-tab="model">Modello</button>
   </nav>
 
+  <div id="loading" class="loading"><div class="bar"><i id="load-bar"></i></div><span id="load-text">Carico l'indice delle carte…</span></div>
+
   <main>
-    <!-- DASHBOARD -->
-    <section id="tab-dashboard" class="tab active">
+    <!-- ------------------------------------------------------------ RADAR -->
+    <section id="tab-radar" class="tab active">
       <div class="kpis" id="kpis"></div>
-      <h2>Segnali sulle tue carte</h2>
-      <div id="dash-signals" class="list"></div>
-      <h2>Opportunità del giorno <small>(scanner automatico)</small></h2>
-      <div id="dash-opps" class="list"><p class="muted">Caricamento…</p></div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Indice di mercato</h2>
+          <span class="hint" id="index-note"></span>
+        </div>
+        <div id="market-chart"></div>
+      </section>
+
+      <div class="cols">
+        <section class="panel">
+          <div class="panel-head"><h2>In salita</h2><span class="hint">ultimi 30 giorni</span></div>
+          <div id="movers-up" class="list dense"></div>
+        </section>
+        <section class="panel">
+          <div class="panel-head"><h2>In calo</h2><span class="hint">ultimi 30 giorni</span></div>
+          <div id="movers-down" class="list dense"></div>
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Occasioni secondo il modello</h2>
+          <span class="hint">previsione netta più alta, fra le carte liquide</span></div>
+        <div id="opportunities" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Preordini e uscite recenti</h2>
+          <span class="hint">il segmento più rischioso: prezzi di prevendita</span></div>
+        <div id="preorders" class="list dense"></div>
+      </section>
     </section>
 
-    <!-- MARKET -->
+    <!-- ------------------------------------------------------------ MERCATO -->
     <section id="tab-market" class="tab">
-      <form id="search-form" class="search">
-        <input id="search-q" type="search" placeholder="Cerca una carta fisica (es. Ragavan) o una query Scryfall" autocomplete="off">
-        <button type="submit">Cerca</button>
+      <form id="filters" class="filters">
+        <label>Cerca<input name="q" type="search" placeholder="Nome della carta" autocomplete="off"></label>
+        <label>Prezzo minimo<input name="min" type="number" min="0" step="1" placeholder="0"></label>
+        <label>Prezzo massimo<input name="max" type="number" min="0" step="1" placeholder="∞"></label>
+        <label>Rarità<select name="rarity"><option value="">tutte</option><option>common</option><option>uncommon</option><option>rare</option><option>mythic</option></select></label>
+        <label>Ordina per<select name="sort">
+          <option value="signal">Previsione netta</option>
+          <option value="price-desc">Prezzo ↓</option>
+          <option value="price-asc">Prezzo ↑</option>
+          <option value="edhrec">Più giocate</option>
+          <option value="new">Più recenti</option>
+          <option value="name">Nome</option>
+        </select></label>
+        <div class="chips">
+          <label class="chip"><input type="checkbox" name="reserved"> Reserved List</label>
+          <label class="chip"><input type="checkbox" name="upcoming"> Preordini</label>
+          <label class="chip"><input type="checkbox" name="history"> Con storico</label>
+          <label class="chip"><input type="checkbox" name="commander"> Commander</label>
+        </div>
       </form>
-      <div class="presets" id="presets"></div>
+      <div class="result-head"><span id="result-count" class="hint"></span></div>
       <div id="market-results" class="list"></div>
+      <button id="more" class="ghost wide" hidden>Mostra altri 100</button>
     </section>
 
-    <!-- WATCHLIST -->
+    <!-- ------------------------------------------------------------ WATCHLIST -->
     <section id="tab-watch" class="tab">
-      <div class="row-between"><h2>Watchlist</h2>
-        <button id="export-watch" class="ghost">Esporta per lo storico automatico</button></div>
+      <div class="panel-head"><h2>Watchlist</h2><span class="hint" id="watch-note"></span></div>
       <div id="watch-list" class="list"></div>
     </section>
 
-    <!-- PORTFOLIO -->
+    <!-- ------------------------------------------------------------ PORTAFOGLIO -->
     <section id="tab-portfolio" class="tab">
       <div class="kpis" id="pf-kpis"></div>
-      <div class="pf-chart-wrap"><div id="pf-alloc"></div></div>
+      <div id="pf-alloc"></div>
       <div id="pf-list" class="list"></div>
-      <p class="muted small">Il valore di ogni posizione tiene conto della condizione della carta (una Excellent vale
-        circa l'85% di una Near Mint) e il valore netto toglie le commissioni di vendita impostate (Cardmarket ~5% +
-        spedizione, TCGplayer ~13%). Per aggiungere una posizione apri una carta e premi «Aggiungi al portafoglio».</p>
-      <div class="row-between">
-        <button id="export-pf" class="ghost">Esporta backup</button>
-        <label class="ghost file">Importa backup<input type="file" id="import-pf" accept="application/json" hidden></label>
+      <div class="panel subtle">
+        <p>Il valore tiene conto della <strong>condizione</strong> di ogni copia (una Excellent vale circa l'85% di una
+          Near Mint) e il valore netto toglie le <strong>commissioni di vendita</strong> impostate qui sotto.</p>
+        <form id="pf-settings" class="inline-form">
+          <label>Commissioni di vendita %<input name="feePct" type="number" min="0" max="40" step="0.5"></label>
+          <label>Orizzonte previsione<select name="horizon"><option>7</option><option>30</option><option>90</option><option>180</option></select></label>
+          <label>Aggiorna ogni (min)<input name="refreshMin" type="number" min="2" max="240" step="1"></label>
+          <label>Avvisa se varia oltre %<input name="alertPct" type="number" min="1" max="100" step="1"></label>
+          <button type="submit">Salva</button>
+        </form>
+        <div class="row-between">
+          <button id="export" class="ghost">Esporta backup</button>
+          <label class="ghost file">Importa backup<input type="file" id="import" accept="application/json" hidden></label>
+          <button id="wipe" class="danger">Cancella i dati locali</button>
+        </div>
       </div>
     </section>
 
-    <!-- SETTINGS -->
-    <section id="tab-settings" class="tab">
-      <form id="settings-form" class="settings">
-        <label>Valuta / mercato di riferimento
-          <select name="currency">
-            <option value="eur">EUR, Cardmarket (trend)</option>
-            <option value="usd">USD, TCGplayer (market)</option>
-          </select></label>
-        <label>Aggiornamento automatico (minuti)
-          <input name="refreshMin" type="number" min="5" max="240" step="1"></label>
-        <label>Commissioni di vendita stimate (%)
-          <input name="feePct" type="number" min="0" max="40" step="0.5"></label>
-        <label>Orizzonte di previsione (giorni)
-          <select name="horizon"><option>7</option><option>30</option><option>90</option><option>180</option></select></label>
-        <label>Avviso se il prezzo cambia oltre (%)
-          <input name="alertPct" type="number" min="1" max="100" step="1"></label>
-        <button type="submit">Salva</button>
-      </form>
-      <div class="notice">
-        <h3>Come funzionano i dati</h3>
-        <ul>
-          <li><strong>Solo carte fisiche:</strong> le ricerche escludono sempre le carte e le stampe solo digitali.</li>
-          <li><strong>Fonte:</strong> API pubblica di Scryfall, che riporta i prezzi di Cardmarket (trend, Near Mint) e TCGplayer.
-            I prezzi della fonte vengono aggiornati circa <strong>una volta al giorno</strong>: l'app li controlla di
-            continuo e li mostra appena cambiano.</li>
-          <li><strong>Storico:</strong> l'app salva una "fotografia" dei prezzi a ogni aggiornamento. Se pubblichi l'app su
-            GitHub Pages, la GitHub Action inclusa salva lo storico ogni giorno anche quando l'app è chiusa.</li>
-          <li><strong>Previsioni:</strong> modello che combina i fondamentali della carta (Reserved List, ristampe,
-            domanda in Commander, formati legali, età del set, rarità, fascia di prezzo) con il trend e la volatilità
-            dello storico. Ogni segnale mostra il suo perché.</li>
-          <li><strong>Avvertenza:</strong> sono stime statistiche, non consulenza finanziaria. Le ristampe annunciate
-            da Wizards e i ban possono far crollare un prezzo da un giorno all'altro. Diversifica e non investire
-            soldi che non puoi permetterti di perdere.</li>
-        </ul>
-      </div>
-      <button id="wipe" class="danger">Cancella tutti i dati locali</button>
+    <!-- ------------------------------------------------------------ MODELLO -->
+    <section id="tab-model" class="tab">
+      <div id="model-report"></div>
     </section>
   </main>
 
-  <dialog id="card-dialog"><div id="card-detail"></div></dialog>
+  <dialog id="card-dialog" aria-label="Scheda carta"><div id="card-detail"></div></dialog>
   <div id="toast" class="toast" hidden></div>
 
   <script type="module" src="app.js"></script>

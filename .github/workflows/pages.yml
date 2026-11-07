@@ -1,0 +1,60 @@
+name: Costruisci i dati e pubblica il sito
+
+on:
+  push:
+    branches: [claude/beautiful-clarke-q0vikc]
+    paths-ignore: ['README.md']
+  schedule:
+    # Ogni 6 ore: Scryfall e MTGJSON aggiornano i listini circa una volta al giorno,
+    # così il sito recepisce ogni variazione poche ore dopo che esce.
+    - cron: '41 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - name: Scarica i dati reali (Scryfall + MTGJSON)
+        run: node --max-old-space-size=4096 scripts/build-data.mjs
+
+      - name: Ristima e verifica il modello sullo storico
+        run: node --max-old-space-size=4096 scripts/backtest.mjs --write
+
+      - name: Controlli
+        run: node --test tests/*.test.mjs
+
+      - name: Prepara il sito
+        run: |
+          mkdir -p _site
+          cp -r index.html app.js model.js styles.css manifest.json icon.svg lib data _site/
+          rm -f _site/data/watchlist.json
+          du -sh _site _site/data
+
+      - uses: actions/configure-pages@v5
+        with: { enablement: true }
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: _site }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,547 +1,608 @@
-import { forecast } from './model.js';
+// MTG Invest — controller dell'app.
+// Dati reali: indice di tutte le stampe in carta (Scryfall bulk) + storico giornaliero (MTGJSON),
+// prezzi in diretta da Scryfall. Le previsioni vengono da model.js, i cui coefficienti sono
+// stimati e verificati su quello stesso storico da scripts/backtest.mjs.
+import { forecast, statsToTech, FLAG, FIT, isLegal } from './model.js';
+import * as D from './lib/data.js';
 
-const API = 'https://api.scryfall.com';
-const HOUR = 3600000, DAY = 24 * HOUR;
-const COLS = { eur: 1, usd: 2, eur_foil: 3, usd_foil: 4 };
-// Valore stimato rispetto al prezzo Near Mint (scala delle condizioni di Cardmarket)
-const COND = {
-  MT: { label: 'Mint', k: 1 }, NM: { label: 'Near Mint', k: 1 }, EX: { label: 'Excellent', k: 0.85 },
-  GD: { label: 'Good', k: 0.72 }, LP: { label: 'Light Played', k: 0.6 }, PL: { label: 'Played', k: 0.45 }, PO: { label: 'Poor', k: 0.25 },
-};
-const condK = c => (COND[c] || COND.NM).k;
+const DAY = 86400000;
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-// ---------- storage ----------
+// ---------------------------------------------------------------- impostazioni e dati locali
 const LS = {
-  get(k, d) { try { const v = localStorage.getItem('mtgi.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
-  set(k, v) { try { localStorage.setItem('mtgi.' + k, JSON.stringify(v)); } catch (e) { toast('Spazio locale esaurito: esporta un backup'); } },
+  get(k, d) { try { const v = localStorage.getItem('mtgi2.' + k); return v ? JSON.parse(v) : d; } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('mtgi2.' + k, JSON.stringify(v)); } catch { toast('Spazio locale esaurito: esporta un backup'); } },
 };
-const DEFAULTS = { currency: 'eur', refreshMin: 15, feePct: 8, horizon: 30, alertPct: 10 };
+const DEFAULTS = { currency: 'eur', feePct: 8, horizon: 30, refreshMin: 10, alertPct: 8 };
 const S = {
   settings: { ...DEFAULTS, ...LS.get('settings', {}) },
   watch: LS.get('watch', []),
-  cards: LS.get('cards', {}),
-  history: LS.get('history', {}),
   portfolio: LS.get('portfolio', []),
-  lastUpdate: LS.get('lastUpdate', null),
-  remoteHistory: {},
 };
-const save = (...keys) => keys.forEach(k => LS.set(k, S[k]));
+const save = (...k) => k.forEach(x => LS.set(x, S[x]));
 
-// ---------- helpers ----------
-const $ = (s, r = document) => r.querySelector(s);
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const num = v => (v == null || v === '' ? null : Number(v));
-const nf = new Intl.NumberFormat('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-function fmt(p, cur = S.settings.currency) {
-  if (p == null || isNaN(p)) return '—';
-  if (cur === 'usd') return '$' + nf.format(p);
-  return nf.format(p) + ' €';
+// Valore stimato per condizione, rispetto al prezzo Near Mint (scala Cardmarket).
+const COND = { MT: 1, NM: 1, EX: 0.85, GD: 0.72, LP: 0.6, PL: 0.45, PO: 0.25 };
+const COND_LABEL = { MT: 'Mint', NM: 'Near Mint', EX: 'Excellent', GD: 'Good', LP: 'Light Played', PL: 'Played', PO: 'Poor' };
+
+// ---------------------------------------------------------------- formattazione
+const nf2 = new Intl.NumberFormat('it-IT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const nf0 = new Intl.NumberFormat('it-IT', { maximumFractionDigits: 0 });
+const cur = () => S.settings.currency;
+function money(v, c = cur()) {
+  if (v == null || !Number.isFinite(v)) return '—';
+  return c === 'usd' ? '$' + nf2.format(v) : nf2.format(v) + ' €';
 }
-const pct = (x, sign = true) => (x == null || isNaN(x) ? '—' : (sign && x > 0 ? '+' : '') + (x * 100).toFixed(1).replace('.', ',') + '%');
-const toneOf = x => (x > 0.001 ? 'up' : x < -0.001 ? 'down' : 'flat');
-const sleep = ms => new Promise(r => setTimeout(r, ms));
+const pct = (x, sign = true) => (x == null || !Number.isFinite(x) ? '—' : (sign && x > 0 ? '+' : '') + (x * 100).toFixed(1).replace('.', ',') + '%');
+const tone = x => (x == null ? '' : x > 0.002 ? 'up' : x < -0.002 ? 'down' : 'flat');
 let toastTimer;
 function toast(msg) {
   const t = $('#toast'); t.textContent = msg; t.hidden = false;
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 4000);
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 4200);
 }
 
-// ---------- Scryfall API (max ~10 req/s) ----------
-let lastCall = 0;
-async function api(path, opts = {}) {
-  const wait = lastCall + 110 - Date.now();
-  if (wait > 0) await sleep(wait);
-  lastCall = Date.now();
-  const res = await fetch(API + path, { ...opts, headers: { Accept: 'application/json', ...(opts.body ? { 'Content-Type': 'application/json' } : {}) } });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok && res.status !== 404) throw new Error(data.details || 'Errore API ' + res.status);
-  return data;
-}
-
-function slim(c) {
-  const face = c.image_uris || c.card_faces?.[0]?.image_uris || {};
-  return {
-    id: c.id, name: c.name, set: c.set, set_name: c.set_name, cn: c.collector_number, rarity: c.rarity,
-    released_at: c.released_at, reserved: c.reserved, reprint: c.reprint, edhrec_rank: c.edhrec_rank,
-    legalities: c.legalities, games: c.games, prices: c.prices, type_line: c.type_line || c.card_faces?.[0]?.type_line,
-    img: face.normal, thumb: face.small, purchase: c.purchase_uris || {}, uri: c.scryfall_uri,
-    oracle_id: c.oracle_id, fetchedAt: Date.now(),
-  };
-}
-
-function priceOf(card, foil = false, cur = S.settings.currency) {
-  const p = card?.prices || {};
-  const base = num(p[cur]), f = num(p[cur + '_foil']);
-  return foil ? (f ?? base) : (base ?? f);
-}
-
-// ---------- price history ----------
-function snapshot(card) {
-  const p = card.prices || {};
-  const row = [Date.now(), num(p.eur), num(p.usd), num(p.eur_foil), num(p.usd_foil)];
-  const h = S.history[card.id] || (S.history[card.id] = []);
-  const last = h[h.length - 1];
-  if (last) {
-    const same = row.slice(1).every((v, i) => v === last[i + 1]);
-    if (same && row[0] - last[0] < 6 * HOUR) return;
+// ---------------------------------------------------------------- previsione di una carta
+// Quale quotazione mostrare: la valuta scelta, altrimenti l'altra; e per le stampe che esistono
+// solo in foil, la quotazione foil. Restituisce anche quale, così l'interfaccia può dirlo.
+function quote(card, preferFoil = false) {
+  const p = D.livePrices(card);
+  const c = cur(), other = c === 'eur' ? 'usd' : 'eur';
+  const order = preferFoil
+    ? [[c, true], [other, true], [c, false], [other, false]]
+    : [[c, false], [other, false], [c, true], [other, true]];
+  for (const [currency, foil] of order) {
+    const v = p[foil ? `${currency}_foil` : currency];
+    if (v != null) return { v, currency, foil, exact: currency === c && foil === preferFoil };
   }
-  h.push(row);
-  if (h.length > 500) h.splice(0, h.length - 500);
+  return { v: null, currency: c, foil: preferFoil, exact: true };
 }
+const priceOf = (card, foil = false) => quote(card, foil).v;
+const statsOf = card => card.stats || null;
 
-function seriesFor(id, foil = false, cur = S.settings.currency) {
-  const col = COLS[foil ? cur + '_foil' : cur];
-  const rows = [...(S.remoteHistory[id] || []), ...(S.history[id] || [])].sort((a, b) => a[0] - b[0]);
-  const out = [];
-  for (const r of rows) {
-    const v = r[col] ?? (foil ? null : r[col + 2]); // fallback foil se manca la non-foil
-    if (v == null) continue;
-    if (out.length && Math.abs(out[out.length - 1][0] - r[0]) < HOUR) { out[out.length - 1] = [r[0], v]; continue; }
-    out.push([r[0], v]);
-  }
-  return out;
-}
-
-async function loadRemoteHistory() {
-  // Storico giornaliero salvato dalla GitHub Action (se l'app è su GitHub Pages)
-  try {
-    const res = await fetch('data/history.json', { cache: 'no-store' });
-    if (!res.ok) return;
-    const data = await res.json();
-    for (const [id, rows] of Object.entries(data.cards || {})) {
-      S.remoteHistory[id] = rows.map(([d, ...v]) => [Date.parse(d), ...v]);
-    }
-  } catch { /* nessuno storico remoto: va bene */ }
-}
-
-function fc(card, foil = false) {
+function fc(card, { foil = false, horizon = S.settings.horizon, tech, series = null } = {}) {
   return forecast({
-    card, price: priceOf(card, foil), series: seriesFor(card.id, foil),
-    horizonDays: Number(S.settings.horizon), feePct: S.settings.feePct / 100,
+    card, price: priceOf(card, foil), series,
+    tech: tech !== undefined ? tech : statsToTech(statsOf(card)),
+    horizonDays: Number(horizon), feePct: S.settings.feePct / 100,
   });
 }
 
-// ---------- refresh loop ----------
-const trackedIds = () => [...new Set([...S.watch, ...S.portfolio.map(l => l.id)])];
-
-async function refresh({ silent = false } = {}) {
-  const ids = trackedIds();
-  const dot = $('#live-dot');
-  dot.className = 'dot busy';
-  try {
-    for (let i = 0; i < ids.length; i += 75) {
-      const chunk = ids.slice(i, i + 75);
-      const data = await api('/cards/collection', { method: 'POST', body: JSON.stringify({ identifiers: chunk.map(id => ({ id })) }) });
-      for (const c of data.data || []) {
-        const prev = S.cards[c.id];
-        const card = slim(c);
-        checkAlert(prev, card);
-        S.cards[c.id] = card;
-        snapshot(card);
-      }
-    }
-    S.lastUpdate = Date.now();
-    save('cards', 'history', 'lastUpdate');
-    dot.className = 'dot ok';
-    if (!silent) toast(ids.length ? `Prezzi aggiornati: ${ids.length} ${ids.length === 1 ? 'carta' : 'carte'}` : 'Nessuna carta seguita: aggiungine una con ★');
-  } catch (e) {
-    dot.className = 'dot err';
-    toast('Aggiornamento non riuscito: ' + e.message);
-  }
-  renderAll();
+// ---------------------------------------------------------------- grafici
+function lineChart(points, { W = 680, H = 200, proj = null, fmt = v => nf2.format(v) } = {}) {
+  const P = { l: 56, r: 14, t: 12, b: 22 };
+  const pts = points.filter(p => p && p[1] != null);
+  if (pts.length < 2) return '<div class="chart-empty">Storico non disponibile per questa stampa.</div>';
+  const tMin = pts[0][0];
+  const tMax = proj ? proj.at : pts[pts.length - 1][0];
+  const vals = pts.map(p => p[1]).concat(proj ? [proj.low, proj.high, proj.expected] : []).filter(v => v != null);
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 1e-9) { hi += 1; lo = Math.max(0, lo - 1); }
+  const pad = (hi - lo) * 0.08; lo = Math.max(0, lo - pad); hi += pad;
+  const x = t => P.l + ((t - tMin) / Math.max(1, tMax - tMin)) * (W - P.l - P.r);
+  const y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
+  const d = pts.map(([t, v], i) => `${i ? 'L' : 'M'}${x(t).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const area = `${d}L${x(pts[pts.length - 1][0]).toFixed(1)},${y(lo).toFixed(1)}L${x(tMin).toFixed(1)},${y(lo).toFixed(1)}Z`;
+  const grid = [lo, (lo + hi) / 2, hi].map(v =>
+    `<line class="grid" x1="${P.l}" x2="${W - P.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>` +
+    `<text x="${P.l - 6}" y="${(y(v) + 3.5).toFixed(1)}" text-anchor="end">${fmt(v)}</text>`).join('');
+  const last = pts[pts.length - 1];
+  const cone = proj ? `<path class="cone" d="M${x(last[0]).toFixed(1)},${y(last[1]).toFixed(1)}L${x(proj.at).toFixed(1)},${y(proj.high).toFixed(1)}L${x(proj.at).toFixed(1)},${y(proj.low).toFixed(1)}Z"/>
+     <path class="proj" d="M${x(last[0]).toFixed(1)},${y(last[1]).toFixed(1)}L${x(proj.at).toFixed(1)},${y(proj.expected).toFixed(1)}"/>` : '';
+  const dd = t => new Date(t).toLocaleDateString('it-IT', { day: '2-digit', month: 'short' });
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Andamento del prezzo">
+    ${grid}<path class="area" d="${area}"/>${cone}<path class="line" d="${d}"/>
+    <circle class="pt" cx="${x(last[0]).toFixed(1)}" cy="${y(last[1]).toFixed(1)}" r="3"/>
+    <text x="${P.l}" y="${H - 5}">${dd(tMin)}</text>
+    <text x="${x(last[0]).toFixed(1)}" y="${H - 5}" text-anchor="middle">oggi</text>
+    ${proj ? `<text x="${W - P.r}" y="${H - 5}" text-anchor="end">+${proj.days}g</text>` : ''}</svg>`;
 }
 
-function checkAlert(prev, card) {
-  if (!prev) return;
-  const a = priceOf(prev), b = priceOf(card);
-  if (!a || !b) return;
-  const ch = (b - a) / a;
-  if (Math.abs(ch) * 100 >= S.settings.alertPct) {
-    const msg = `${card.name}: ${fmt(a)} → ${fmt(b)} (${pct(ch)})`;
-    toast('📈 ' + msg);
-    if ('Notification' in window && Notification.permission === 'granted') new Notification('MTG Invest', { body: msg, icon: 'icon.svg' });
-  }
-}
-
-let timer;
-function schedule() {
-  clearInterval(timer);
-  timer = setInterval(() => refresh({ silent: true }), Math.max(5, S.settings.refreshMin) * 60000);
-}
-
-// ---------- rendering ----------
-function changeSince(id, foil, ms) {
-  const s = seriesFor(id, foil);
-  if (s.length < 2) return null;
-  const last = s[s.length - 1];
-  const ref = [...s].reverse().find(([t]) => last[0] - t >= ms) || s[0];
-  return ref[1] ? (last[1] - ref[1]) / ref[1] : null;
-}
-
+// ---------------------------------------------------------------- righe
 function cardRow(card, { foil = false, extra = '' } = {}) {
-  const f = fc(card, foil);
-  const price = priceOf(card, foil);
-  const ch = changeSince(card.id, foil, 7 * DAY);
-  const starred = S.watch.includes(card.id);
-  const rl = card.reserved ? '<span class="tag gold">Reserved List</span>' : '';
-  return `<div class="row" data-action="open" data-id="${card.id}">
-    ${card.thumb ? `<img class="thumb" loading="lazy" src="${esc(card.thumb)}" alt="">` : '<div class="thumb"></div>'}
-    <div class="info">
-      <div class="name">${esc(card.name)} ${foil ? '<span class="tag foil">Foil</span>' : ''}</div>
-      <div class="meta">${esc(card.set_name)} · ${esc(card.rarity)} ${rl}</div>
+  const f = fc(card, { foil });
+  const q = quote(card, foil);
+  const ch = statsOf(card)?.[0];
+  const tags = [
+    card.flags & FLAG.reserved ? '<span class="tag gold">Reserved</span>' : '',
+    card.flags & FLAG.upcoming ? '<span class="tag pre">Preordine</span>' : '',
+    foil ? '<span class="tag foil">Foil</span>' : '',
+  ].join('');
+  return `<div class="row" data-open="${card.id}">
+    <img class="thumb" loading="lazy" decoding="async" src="${D.imageUrl(card.id)}" alt="" onerror="this.style.visibility='hidden'">
+    <div class="cell">
+      <div class="name">${esc(card.name)} ${tags}</div>
+      <div class="sub">${esc(card.setName)} · #${esc(card.cn)} · ${esc(card.rarity)}</div>
       ${extra}
     </div>
     <div class="nums">
-      <div class="price">${fmt(price)}</div>
-      <div class="chg ${toneOf(ch)}">${ch == null ? 'nuovo' : pct(ch) + ' 7g'}</div>
+      <div class="price">${money(q.v, q.currency)}${q.foil && !foil ? ' <span class="tag foil">foil</span>' : ''}</div>
+      <div class="chg ${tone(ch)}">${ch == null ? '<span class="hint">senza storico</span>' : pct(ch) + ' 30g'}</div>
       <span class="badge ${f.tone}">${f.signal}</span>
     </div>
-    <button class="star ${starred ? 'on' : ''}" data-action="star" data-id="${card.id}" title="Watchlist" aria-label="Watchlist">★</button>
+    <button class="star ${S.watch.includes(card.id) ? 'on' : ''}" data-star="${card.id}" aria-label="Aggiungi alla watchlist">★</button>
   </div>`;
 }
+const kpi = (label, value, sub = '', cls = '') =>
+  `<div class="kpi"><div class="kl">${label}</div><div class="kv ${cls}">${value}</div><div class="ks">${sub}</div></div>`;
 
-function kpi(label, value, sub = '', tone = '') {
-  return `<div class="kpi"><div class="kl">${label}</div><div class="kv ${tone}">${value}</div><div class="ks">${sub}</div></div>`;
-}
-
+// ---------------------------------------------------------------- portafoglio
 function portfolioStats() {
-  const cur = S.settings.currency, fee = S.settings.feePct / 100;
-  let cost = 0, value = 0, future = 0, other = 0;
+  const fee = S.settings.feePct / 100;
+  let cost = 0, value = 0, future = 0, missing = 0;
   const lots = [];
   for (const l of S.portfolio) {
-    const card = S.cards[l.id];
-    if (!card) continue;
-    if ((l.cur || 'eur') !== cur) { other++; continue; }
-    const k = condK(l.cond);
-    const p = (priceOf(card, l.foil) ?? 0) * k;
-    const f = fc(card, l.foil);
-    cost += l.qty * l.buy; value += l.qty * p; future += l.qty * (f.expected != null ? f.expected * k : p);
-    lots.push({ l, card, p, f, val: l.qty * p, pl: l.qty * (p - l.buy) });
+    const card = D.state.byId.get(l.id);
+    if (!card) { missing++; continue; }
+    const k = COND[l.cond] ?? 1;
+    const base = quote(card, l.foil).v ?? 0;
+    const p = base * k;
+    const f = fc(card, { foil: l.foil });
+    const exp = (f.expected ?? base) * k;
+    cost += l.qty * l.buy; value += l.qty * p; future += l.qty * exp;
+    lots.push({ l, card, p, f, val: l.qty * p, pl: l.qty * (p * (1 - fee) - l.buy) });
   }
   const net = value * (1 - fee);
-  return { cost, value, net, future, pl: net - cost, plPct: cost ? (net - cost) / cost : 0, lots, other };
+  return { cost, value, net, future, pl: net - cost, plPct: cost ? (net - cost) / cost : 0, lots, missing };
 }
 
-function renderDashboard() {
-  const st = portfolioStats();
-  const all = trackedIds().map(id => S.cards[id]).filter(Boolean);
-  const fcs = all.map(c => ({ c, f: fc(c) }));
-  const buys = fcs.filter(x => x.f.tone === 'up').length;
-  const sells = fcs.filter(x => x.f.tone === 'down').length;
+// ---------------------------------------------------------------- viste
+function renderRadar() {
+  const meta = D.state.meta, st = portfolioStats();
+  const pts = meta.market.points.map((v, i) => [Date.parse(meta.axis.start) + i * DAY, v]).filter(p => p[1] != null);
+  const first = pts[0]?.[1], last = pts[pts.length - 1]?.[1];
+  const mkt = first ? (last - first) / first : null;
+
   $('#kpis').innerHTML =
-    kpi('Valore portafoglio', fmt(st.value), `netto commissioni ${fmt(st.net)}`) +
-    kpi('Profitto / perdita', fmt(st.pl), pct(st.plPct), toneOf(st.pl)) +
-    kpi(`Previsione ${S.settings.horizon}g`, fmt(st.future), st.value ? pct((st.future - st.value) / st.value) : '', toneOf(st.future - st.value)) +
-    kpi('Segnali', `<span class="up">${buys}↑</span> <span class="down">${sells}↓</span>`, `${all.length} carte seguite`);
-  const order = { up: 0, down: 1, flat: 2, muted: 3 };
-  fcs.sort((a, b) => order[a.f.tone] - order[b.f.tone] || b.f.fund.score - a.f.fund.score);
-  $('#dash-signals').innerHTML = fcs.length
-    ? fcs.slice(0, 12).map(({ c, f }) => cardRow(c, { extra: `<div class="why">${esc(f.fund.factors[0]?.label || '')}</div>` })).join('')
-    : '<p class="muted">Nessuna carta seguita. Vai su <b>Mercato</b>, cerca una carta e premi ★.</p>';
+    kpi('Mercato (90 giorni)', pct(mkt), `${nf0.format(meta.market.sample)} carte nell'indice`, tone(mkt)) +
+    kpi('Carte seguite', String(tracked().length), `${nf0.format(meta.counts.printings)} stampe disponibili`) +
+    kpi('Portafoglio', money(st.value), `netto ${money(st.net)}`) +
+    kpi('P/L netto', money(st.pl), pct(st.plPct), tone(st.pl));
+
+  $('#index-note').textContent = `${meta.market.basis} · fonte MTGJSON`;
+  $('#market-chart').innerHTML = lineChart(pts, { fmt: v => v.toFixed(0) });
+
+  const moverRow = m => {
+    const c = D.state.byId.get(m.id);
+    return c ? cardRow(c) : '';
+  };
+  $('#movers-up').innerHTML = meta.movers.up.slice(0, 8).map(moverRow).join('') || '<p class="hint">In caricamento…</p>';
+  $('#movers-down').innerHTML = meta.movers.down.slice(0, 8).map(moverRow).join('') || '<p class="hint">In caricamento…</p>';
+
+  // occasioni: previsione netta più alta fra le carte con un mercato vero
+  const cands = [];
+  for (const c of D.state.cards) {
+    const p = priceOf(c);
+    if (!(p >= 3 && p <= 400)) continue;
+    const s = statsOf(c);
+    if (!s || s[4] < 0.8 || s[5] < 60) continue;       // serve una serie continua e lunga
+    const f = fc(c);
+    if (f.netEdge > 0 && f.tone === 'up') cands.push({ c, f });
+  }
+  cands.sort((a, b) => b.f.netEdge - a.f.netEdge);
+  $('#opportunities').innerHTML = cands.slice(0, 10).map(({ c, f }) => cardRow(c, {
+    extra: `<div class="why">Attesa ${pct(f.drift)} a ${f.horizonDays}g · netto commissioni ${pct(f.netEdge)} · qualità ${f.fund.score}/100</div>`,
+  })).join('') || '<p class="hint">Oggi nessuna carta supera i costi di vendita. Anche non comprare è una decisione.</p>';
+
+  const pre = D.state.cards.filter(c => c.flags & FLAG.upcoming).sort((a, b) => (priceOf(b) ?? 0) - (priceOf(a) ?? 0));
+  $('#preorders').innerHTML = pre.slice(0, 8).map(c => cardRow(c)).join('') ||
+    '<p class="hint">Nessun preordine nell\'ultima build dei dati.</p>';
+}
+
+let marketShown = 100;
+function filteredCards() {
+  const f = new FormData($('#filters'));
+  const q = String(f.get('q') || '').trim().toLowerCase();
+  const min = f.get('min') ? Number(f.get('min')) : null;
+  const max = f.get('max') ? Number(f.get('max')) : null;
+  const rarity = f.get('rarity');
+  const out = [];
+  for (const c of D.state.cards) {
+    if (q && !c.search.includes(q)) continue;
+    if (rarity && c.rarity !== rarity) continue;
+    if (f.get('reserved') && !(c.flags & FLAG.reserved)) continue;
+    if (f.get('upcoming') && !(c.flags & FLAG.upcoming)) continue;
+    if (f.get('history') && !(c.flags & FLAG.history)) continue;
+    if (f.get('commander') && !isLegal(c, 'commander')) continue;
+    const p = priceOf(c);
+    if (min != null && !(p >= min)) continue;
+    if (max != null && !(p != null && p <= max)) continue;
+    out.push(c);
+  }
+  const sort = f.get('sort');
+  const price = c => priceOf(c) ?? -1;
+  const noPrice = c => (priceOf(c) == null ? 1 : 0);
+  if (sort === 'price-desc') out.sort((a, b) => price(b) - price(a));
+  else if (sort === 'price-asc') out.sort((a, b) => price(a) - price(b));
+  else if (sort === 'edhrec') out.sort((a, b) => (a.edhrec || 1e9) - (b.edhrec || 1e9));
+  else if (sort === 'new') out.sort((a, b) => b.releasedDays - a.releasedDays);
+  else if (sort === 'name') out.sort((a, b) => a.name.localeCompare(b.name) || price(b) - price(a));
+  else out.sort((a, b) => noPrice(a) - noPrice(b) || fc(b).netEdge - fc(a).netEdge);
+  return out;
+}
+function renderMarket() {
+  const t0 = performance.now();
+  const list = filteredCards();
+  const shown = list.slice(0, marketShown);
+  $('#result-count').textContent =
+    `${nf0.format(list.length)} stampe trovate su ${nf0.format(D.state.loaded)} caricate · ${Math.round(performance.now() - t0)} ms`;
+  $('#market-results').innerHTML = shown.map(c => cardRow(c)).join('') || '<p class="hint">Nessun risultato con questi filtri.</p>';
+  $('#more').hidden = list.length <= shown.length;
 }
 
 function renderWatch() {
-  const cards = S.watch.map(id => S.cards[id]).filter(Boolean);
-  $('#watch-list').innerHTML = cards.length ? cards.map(c => cardRow(c)).join('')
-    : '<p class="muted">La watchlist è vuota.</p>';
+  const cards = S.watch.map(id => D.state.byId.get(id)).filter(Boolean);
+  $('#watch-note').textContent = cards.length
+    ? `aggiornate ogni ${S.settings.refreshMin} minuti · avviso oltre il ${S.settings.alertPct}%`
+    : '';
+  $('#watch-list').innerHTML = cards.length
+    ? cards.map(c => cardRow(c)).join('')
+    : '<p class="hint">Vuota. Cerca una carta e premi ★ per seguirla: i suoi prezzi verranno controllati in continuo.</p>';
 }
 
 function renderPortfolio() {
   const st = portfolioStats();
   $('#pf-kpis').innerHTML =
-    kpi('Investito', fmt(st.cost)) +
-    kpi('Valore di mercato', fmt(st.value), `netto ${fmt(st.net)}`) +
-    kpi('P/L netto', fmt(st.pl), pct(st.plPct), toneOf(st.pl)) +
-    kpi(`Atteso a ${S.settings.horizon}g`, fmt(st.future), st.value ? pct((st.future - st.value) / st.value) : '', toneOf(st.future - st.value));
+    kpi('Investito', money(st.cost)) +
+    kpi('Valore di mercato', money(st.value), `netto ${money(st.net)}`) +
+    kpi('P/L netto', money(st.pl), pct(st.plPct), tone(st.pl)) +
+    kpi(`Atteso a ${S.settings.horizon}g`, money(st.future), st.value ? pct((st.future - st.value) / st.value) : '', tone(st.future - st.value));
+
   const total = st.value || 1;
-  const colors = ['#7c5cff', '#22c55e', '#f59e0b', '#06b6d4', '#ef4444', '#a3e635', '#ec4899', '#94a3b8'];
+  const colors = ['#6366f1', '#10b981', '#f59e0b', '#06b6d4', '#ef4444', '#a3e635', '#ec4899', '#94a3b8'];
   const sorted = [...st.lots].sort((a, b) => b.val - a.val);
-  $('#pf-alloc').innerHTML = sorted.length ? `<div class="alloc">${sorted.map((x, i) =>
-    `<span style="width:${(x.val / total) * 100}%;background:${colors[i % colors.length]}" title="${esc(x.card.name)} ${pct(x.val / total, false)}"></span>`).join('')}</div>
-    <div class="legend">${sorted.slice(0, 8).map((x, i) => `<span><i style="background:${colors[i]}"></i>${esc(x.card.name)} ${pct(x.val / total, false)}</span>`).join('')}</div>
-    ${sorted[0] && sorted[0].val / total > 0.4 ? '<p class="warn small">⚠ Più del 40% del portafoglio è in una sola carta: una ristampa annunciata può costarti cara. Diversifica.</p>' : ''}` : '';
+  $('#pf-alloc').innerHTML = sorted.length ? `<div class="panel">
+      <div class="alloc">${sorted.map((x, i) => `<span style="width:${(x.val / total) * 100}%;background:${colors[i % colors.length]}"></span>`).join('')}</div>
+      <div class="legend">${sorted.slice(0, 8).map((x, i) => `<span><i style="background:${colors[i % colors.length]}"></i>${esc(x.card.name)} ${pct(x.val / total, false)}</span>`).join('')}</div>
+      ${sorted[0].val / total > 0.4 ? '<p class="small flat">Più del 40% del valore è in una sola carta: una ristampa annunciata può colpire duro. Valuta di diversificare.</p>' : ''}
+    </div>` : '';
+
   $('#pf-list').innerHTML = st.lots.length ? st.lots.map(({ l, card, p, pl }) => cardRow(card, {
     foil: l.foil,
-    extra: `<div class="lot">${l.qty}× ${esc(l.cond || 'NM')} a ${fmt(l.buy)} · vale ${fmt(p)} · P/L <b class="${toneOf(pl)}">${fmt(pl)}</b>
-      <button class="link" data-action="remove-lot" data-lid="${l.lid}">rimuovi</button></div>`,
-  })).join('') : '<p class="muted">Nessuna posizione aperta.</p>';
-  if (st.other) $('#pf-list').insertAdjacentHTML('beforeend', `<p class="muted small">${st.other} posizioni registrate in un'altra valuta non sono incluse: cambia valuta nelle impostazioni per vederle.</p>`);
+    extra: `<div class="lot">${l.qty}× ${esc(l.cond || 'NM')} a ${money(l.buy)} · vale ${money(p)} · P/L netto
+      <b class="${tone(pl)}">${money(pl)}</b> <button class="link" data-del="${l.lid}">rimuovi</button></div>`,
+  })).join('') : '<p class="hint">Nessuna posizione. Apri una carta e usa «Aggiungi al portafoglio».</p>';
+  if (st.missing) $('#pf-list').insertAdjacentHTML('beforeend',
+    `<p class="hint">${st.missing} posizioni sono ancora in caricamento…</p>`);
 }
 
-function renderStatus() {
-  $('#last-update').textContent = S.lastUpdate
-    ? 'Aggiornato ' + new Date(S.lastUpdate).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
-    : 'In attesa';
+function renderModel() {
+  const b = D.state.backtest, meta = D.state.meta;
+  if (!b) { $('#model-report').innerHTML = '<div class="panel"><p class="hint">Rapporto di verifica non disponibile in questa build.</p></div>'; return; }
+  const q = b.quality;
+  const rows = Object.entries(b.models).map(([name, m]) =>
+    `<tr${name === 'modello stimato' ? ' class="me"' : ''}><td>${esc(name)}</td><td class="n">${pct(m.mae, false)}</td>
+     <td class="n ${tone(m.skill)}">${pct(m.skill)}</td><td class="n">${m.cases ? pct(m.direction, false) : '—'}</td>
+     <td class="n">${nf0.format(m.cases)}</td></tr>`).join('');
+  const buckets = Object.entries(b.byBucket).sort((a, c) => c[1].mean - a[1].mean).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td class="n ${tone(v.mean)}">${pct(v.mean)}</td><td class="n">${pct(v.median)}</td><td class="n">${nf0.format(v.n)}</td></tr>`).join('');
+  const coef = Object.entries(b.fit).map(([k, v]) =>
+    `<tr><td>${esc(k)}</td><td class="n ${tone(v)}">${v.toFixed(4)}</td></tr>`).join('');
+
+  $('#model-report').innerHTML = `
+    <div class="kpis">
+      ${kpi('Direzione giusta', pct(q.direction, false), `su ${nf0.format(q.samples)} casi fuori campione`, q.direction > 0.5 ? 'up' : 'down')}
+      ${kpi('Errore medio', pct(q.mae, false), `a ${q.horizon} giorni`)}
+      ${kpi('Meglio del «non cambia»', pct(q.skill), q.skill > 0 ? 'vantaggio reale ma piccolo' : 'nessun vantaggio', tone(q.skill))}
+      ${kpi('Intervallo ±1σ', pct(q.coverage, false), 'copertura attesa 68%')}
+    </div>
+    <div class="panel">
+      <h2>Come leggere questi numeri</h2>
+      <p class="small">Il modello è <strong>stimato sui prezzi reali</strong> di ${nf0.format(meta.counts.withHistory)} stampe
+        e verificato su carte <strong>mai usate per stimarlo</strong>: è il controllo che distingue una previsione da un
+        racconto. Il mercato a ${q.horizon} giorni è quasi imprevedibile — la variazione mediana è ${pct(b.marketMoveMedian)} —
+        quindi azzeccare la direzione nel ${pct(q.direction, false)} dei casi è un vantaggio piccolo ma reale.
+        Non è una macchina da soldi e non va usata come tale.</p>
+      <div class="scroll-x"><table>
+        <thead><tr><th>modello</th><th class="n">errore medio</th><th class="n">meglio del «non cambia»</th><th class="n">direzione giusta</th><th class="n">casi</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>
+    </div>
+    <div class="panel">
+      <h2>Quanto hanno reso davvero le previsioni</h2>
+      <p class="small">Rendimento reale a ${q.horizon} giorni delle carte fuori campione, raggruppate per quello che il
+        modello aveva previsto. È la verifica che conta per chi investe.</p>
+      <div class="scroll-x"><table>
+        <thead><tr><th>previsione</th><th class="n">resa media</th><th class="n">mediana</th><th class="n">casi</th></tr></thead>
+        <tbody>${buckets}</tbody></table></div>
+    </div>
+    <div class="panel">
+      <h2>Coefficienti stimati</h2>
+      <p class="small">Previsione del rendimento logaritmico a 30 giorni. Il segno negativo su <code>m30</code> è il
+        risultato più netto della verifica: nel mercato delle carte <strong>una corsa recente tende a rientrare</strong>,
+        quindi inseguire il trend fa perdere soldi.</p>
+      <div class="scroll-x"><table><thead><tr><th>variabile</th><th class="n">coefficiente</th></tr></thead><tbody>${coef}</tbody></table></div>
+      <p class="hint">m30 e m90: variazione negli ultimi 30 e 90 giorni · score: punteggio dei fondamentali ·
+        fromHigh: distanza dal massimo recente · logPrice: livello di prezzo.</p>
+    </div>
+    <div class="panel">
+      <h2>Da dove vengono i dati</h2>
+      <ul class="small">
+        <li><strong>Carte e prezzi di oggi:</strong> ${esc(meta.source.cards)} — ${nf0.format(meta.counts.printings)} stampe
+          in carta di ${nf0.format(meta.counts.sets)} set, varianti comprese.</li>
+        <li><strong>Storico giornaliero:</strong> ${esc(meta.source.history)} — ${nf0.format(meta.counts.withHistory)} stampe,
+          ${meta.axis.days} giorni fino al ${esc(meta.today)}.</li>
+        <li><strong>Prezzi in diretta:</strong> API di Scryfall, interrogata dall'app per le carte che segui. La fonte
+          aggiorna i listini circa una volta al giorno: l'app li ricontrolla ogni ${S.settings.refreshMin} minuti e
+          mostra il cambio appena esce.</li>
+        <li><strong>Ultima build dei dati:</strong> ${esc(new Date(meta.built).toLocaleString('it-IT'))}.</li>
+      </ul>
+      <p class="small flat">Previsioni statistiche, non consulenza finanziaria. Ristampe annunciate e ban possono
+        dimezzare un prezzo in un giorno: nessun modello li vede arrivare.</p>
+    </div>`;
 }
 
-function renderAll() { renderStatus(); renderDashboard(); renderWatch(); renderPortfolio(); }
-
-// ---------- chart ----------
-function chartSVG(series, f) {
-  const W = 640, H = 220, P = { l: 52, r: 12, t: 12, b: 26 };
-  if (series.length < 2) {
-    return `<div class="chart-empty">Lo storico si costruisce da adesso: ogni aggiornamento aggiunge un punto.
-      Aggiungi la carta alla watchlist perché venga tracciata anche in futuro.</div>`;
-  }
-  const t0 = series[0][0], tLast = series[series.length - 1][0];
-  const tEnd = tLast + f.horizonDays * DAY;
-  const vals = series.map(s => s[1]).concat([f.low, f.high].filter(v => v != null));
-  let lo = Math.min(...vals), hi = Math.max(...vals);
-  if (hi - lo < 1e-6) { hi += 1; lo = Math.max(0, lo - 1); }
-  const x = t => P.l + ((t - t0) / (tEnd - t0)) * (W - P.l - P.r);
-  const y = v => P.t + (1 - (v - lo) / (hi - lo)) * (H - P.t - P.b);
-  const line = series.map(([t, v], i) => `${i ? 'L' : 'M'}${x(t).toFixed(1)},${y(v).toFixed(1)}`).join('');
-  const last = series[series.length - 1];
-  const cone = f.expected != null
-    ? `<path d="M${x(tLast)},${y(last[1])} L${x(tEnd)},${y(f.high)} L${x(tEnd)},${y(f.low)} Z" class="cone"/>
-       <path d="M${x(tLast)},${y(last[1])} L${x(tEnd)},${y(f.expected)}" class="proj"/>` : '';
-  const ticks = [lo, (lo + hi) / 2, hi].map(v => `<text x="${P.l - 6}" y="${y(v) + 4}" text-anchor="end">${nf.format(v)}</text>
-    <line x1="${P.l}" x2="${W - P.r}" y1="${y(v)}" y2="${y(v)}" class="grid"/>`).join('');
-  const d = t => new Date(t).toLocaleDateString('it-IT', { day: '2-digit', month: 'short' });
-  return `<svg viewBox="0 0 ${W} ${H}" class="chart" role="img" aria-label="Storico prezzi e previsione">
-    ${ticks}${cone}<path d="${line}" class="line"/>
-    <circle cx="${x(tLast)}" cy="${y(last[1])}" r="3.5" class="pt"/>
-    <text x="${P.l}" y="${H - 6}">${d(t0)}</text>
-    <text x="${x(tLast)}" y="${H - 6}" text-anchor="middle">oggi</text>
-    <text x="${W - P.r}" y="${H - 6}" text-anchor="end">+${f.horizonDays}g</text></svg>`;
+function renderAll() {
+  if (!D.state.meta) return;
+  renderRadar(); renderWatch(); renderPortfolio();
+  if ($('#tab-market').classList.contains('active')) renderMarket();
+  if ($('#tab-model').classList.contains('active')) renderModel();
 }
 
-// ---------- detail dialog ----------
+// ---------------------------------------------------------------- scheda carta
 async function openCard(id) {
-  let card = S.cards[id] || searchCache[id];
+  const card = D.state.byId.get(id) || await D.fetchCard(id);
+  if (!card) return toast('Carta non trovata');
   const dlg = $('#card-dialog');
-  if (!card || Date.now() - (card.fetchedAt || 0) > HOUR) {
-    try { card = slim(await api('/cards/' + id)); } catch (e) { if (!card) return toast(e.message); }
-  }
-  searchCache[id] = card;
-  if (S.cards[id]) { S.cards[id] = card; snapshot(card); save('cards', 'history'); }
   let foil = false;
+  let series = null;
+
   const draw = () => {
-    const f = fc(card, foil);
-    const p = card.prices || {};
-    const series = seriesFor(card.id, foil);
-    const starred = S.watch.includes(card.id);
-    const t = f.tech;
+    const p = D.livePrices(card);
+    const f = fc(card, { foil, series, tech: series && series.length ? undefined : statsToTech(statsOf(card)) });
+    const q = quote(card, foil);
+    const price = q.v;
+    const variants = (D.state.byOracle.get(card.oracle) || [card])
+      .slice().sort((a, b) => (priceOf(b) ?? 0) - (priceOf(a) ?? 0));
+    const last = series?.length ? series[series.length - 1] : null;
+    const proj = last && f.expected != null
+      ? { at: last[0] + f.horizonDays * DAY, expected: f.expected, low: f.low, high: f.high, days: f.horizonDays } : null;
+    const st = statsOf(card);
+
     $('#card-detail').innerHTML = `
       <button class="close" data-close aria-label="Chiudi">✕</button>
       <div class="detail">
-        <div class="dimg">${card.img ? `<img src="${esc(card.img)}" alt="${esc(card.name)}">` : ''}</div>
-        <div class="dbody">
-          <h2>${esc(card.name)}</h2>
-          <div class="meta">${esc(card.type_line)} · ${esc(card.set_name)} #${esc(card.cn)} · ${esc(card.rarity)}
-            ${card.reserved ? '<span class="tag gold">Reserved List</span>' : ''}</div>
-          <div class="prices">
-            <div><span>Cardmarket</span><b>${fmt(num(p.eur), 'eur')}</b><small>foil ${fmt(num(p.eur_foil), 'eur')}</small></div>
-            <div><span>TCGplayer</span><b>${fmt(num(p.usd), 'usd')}</b><small>foil ${fmt(num(p.usd_foil), 'usd')}</small></div>
+        <div class="art">
+          <img src="${D.imageUrl(card.id, 'normal')}" alt="${esc(card.name)}" loading="lazy" onerror="this.style.display='none'">
+        </div>
+        <div class="body">
+          <div>
+            <h2>${esc(card.name)}</h2>
+            <div class="meta-line">${esc(card.setName)} · #${esc(card.cn)} · ${esc(card.rarity)} · uscita ${esc(card.released)}
+              ${card.flags & FLAG.reserved ? '<span class="tag gold">Reserved List</span>' : ''}
+              ${card.flags & FLAG.upcoming ? '<span class="tag pre">Preordine</span>' : ''}
+              ${card.edhrec ? `<span class="tag">EDHREC #${card.edhrec}</span>` : ''}</div>
           </div>
-          <div class="seg"><button class="${!foil ? 'on' : ''}" data-foil="0">Normale</button><button class="${foil ? 'on' : ''}" data-foil="1">Foil</button></div>
-          <div class="signal ${f.tone}">
-            <div><span class="badge ${f.tone} big">${f.signal}</span></div>
-            <div class="sgrid">
-              <div><span>Prezzo atteso a ${f.horizonDays}g</span><b>${fmt(f.expected)}</b><small class="${toneOf(f.drift)}">${pct(f.drift)}</small></div>
-              <div><span>Intervallo probabile</span><b>${fmt(f.low)} – ${fmt(f.high)}</b><small>±1σ</small></div>
-              <div><span>Punteggio fondamentali</span><b>${f.fund.score}/100</b><small>affidabilità ${f.confidence}%</small></div>
-              <div><span>Rialzo minimo per andare in pari</span><b>${pct(f.breakEven)}</b><small>commissioni ${S.settings.feePct}%</small></div>
+          <div class="quotes">
+            <div><span>Cardmarket</span><b>${money(p.eur, 'eur')}</b><span>foil ${money(p.eur_foil, 'eur')}</span></div>
+            <div><span>TCGplayer</span><b>${money(p.usd, 'usd')}</b><span>foil ${money(p.usd_foil, 'usd')}</span></div>
+            <div><span>Stampe di questa carta</span><b>${variants.length}</b><span>varianti sul mercato</span></div>
+          </div>
+          <div class="seg">
+            <button data-foil="0" class="${foil ? '' : 'on'}">Normale</button>
+            <button data-foil="1" class="${foil ? 'on' : ''}">Foil</button>
+          </div>
+          <div class="signal-box">
+            <div class="row-between">
+              <span class="badge big ${f.tone}">${f.signal}</span>
+              <span class="hint">${q.exact || q.v == null ? '' : `quotazione ${q.foil ? 'foil ' : ''}${q.currency === 'eur' ? 'Cardmarket' : 'TCGplayer'} · `}affidabilità ${f.confidence}% · orizzonte ${f.horizonDays} giorni</span>
             </div>
+            <div class="sgrid">
+              <div><span>Prezzo atteso</span><b>${money(f.expected)}</b><span class="${tone(f.drift)}">${pct(f.drift)}</span></div>
+              <div><span>Intervallo probabile</span><b>${money(f.low)} – ${money(f.high)}</b><span>±1σ, verificato al ${pct(FIT.quality?.coverage ?? 0.68, false)}</span></div>
+              <div><span>Qualità dei fondamentali</span><b>${f.fund.score}/100</b><span>ristampe, domanda, formati</span></div>
+              <div><span>Serve per andare in pari</span><b>${pct(f.breakEven)}</b><span>commissioni ${S.settings.feePct}%</span></div>
+            </div>
+            ${f.notes.length ? `<div class="notes">${f.notes.map(n => `<div class="note">${esc(n)}</div>`).join('')}</div>` : ''}
           </div>
-          ${chartSVG(series, f)}
-          ${t ? `<div class="tech small muted">Storico ${Math.round(t.spanDays)} giorni (${t.samples} punti) · trend ${pct(t.dailyDrift * 30)}/mese ·
-            volatilità ${pct(t.dailyVol * Math.sqrt(30), false)}/mese · min ${fmt(t.low)} · max ${fmt(t.high)}</div>` : ''}
-          <h3>Perché questo segnale</h3>
-          <ul class="factors">${f.fund.factors.map(x => `<li class="${x.pts > 0 ? 'up' : x.pts < 0 ? 'down' : ''}"><b>${x.pts > 0 ? '+' : ''}${x.pts}</b> ${esc(x.label)}</li>`).join('')}
-            ${t ? `<li><b>${pct(t.momentum)}</b> Momentum (media mobile esponenziale breve contro lunga)</li>` : ''}</ul>
+          <div>${series === null ? '<div class="chart-empty">Carico lo storico reale…</div>' : lineChart(series, { proj })}</div>
+          ${st ? `<p class="hint">Storico reale di ${st[5]} giorni · 30 giorni ${pct(st[0])} · 90 giorni ${pct(st[1])} ·
+            distanza dal massimo ${pct(st[2])} · volatilità mensile ${pct(st[3], false)}</p>` : ''}
+          <div>
+            <h3>Perché questo segnale</h3>
+            <ul class="factors">${f.fund.factors.slice(0, 8).map(x =>
+              `<li class="${x.pts > 0 ? 'up' : x.pts < 0 ? 'down' : ''}"><b>${x.pts > 0 ? '+' : ''}${x.pts}</b> ${esc(x.label)}</li>`).join('')}</ul>
+          </div>
           <div class="actions">
-            <button data-act="watch">${starred ? '★ In watchlist' : '☆ Aggiungi alla watchlist'}</button>
-            ${card.purchase.cardmarket ? `<a class="btn ghost" target="_blank" rel="noopener" href="${esc(card.purchase.cardmarket)}">Cardmarket ↗</a>` : ''}
-            ${card.purchase.tcgplayer ? `<a class="btn ghost" target="_blank" rel="noopener" href="${esc(card.purchase.tcgplayer)}">TCGplayer ↗</a>` : ''}
-            <a class="btn ghost" target="_blank" rel="noopener" href="${esc(card.uri)}">Scryfall ↗</a>
-            <button class="ghost" data-act="prints">Tutte le stampe</button>
+            <button data-watch>${S.watch.includes(card.id) ? '★ Seguita' : '☆ Segui'}</button>
+            <a class="btn ghost" target="_blank" rel="noopener" href="https://www.cardmarket.com/it/Magic/Products/Search?searchString=${encodeURIComponent(card.name)}">Cardmarket ↗</a>
+            <a class="btn ghost" target="_blank" rel="noopener" href="https://scryfall.com/card/${encodeURIComponent(card.set)}/${encodeURIComponent(card.cn)}">Scryfall ↗</a>
           </div>
           <form class="addlot" data-addlot>
-            <h3>Aggiungi al portafoglio</h3>
-            <label>Quantità <input name="qty" type="number" min="1" value="1" required></label>
-            <label>Condizione <select name="cond">${Object.entries(COND).map(([k, c]) =>
-              `<option value="${k}" ${k === 'NM' ? 'selected' : ''}>${k} · ${c.label}${c.k < 1 ? ` (~${Math.round(c.k * 100)}%)` : ''}</option>`).join('')}</select></label>
-            <label>Prezzo di acquisto (${S.settings.currency.toUpperCase()}) <input name="buy" type="number" min="0" step="0.01" value="${priceOf(card, foil) ?? ''}" required></label>
-            <button type="submit">Aggiungi ${foil ? '(foil)' : ''}</button>
+            <label>Quantità<input name="qty" type="number" min="1" value="1" required></label>
+            <label>Condizione<select name="cond">${Object.keys(COND).map(k =>
+              `<option value="${k}"${k === 'NM' ? ' selected' : ''}>${k} · ${COND_LABEL[k]}${COND[k] < 1 ? ` (${Math.round(COND[k] * 100)}%)` : ''}</option>`).join('')}</select></label>
+            <label>Prezzo pagato<input name="buy" type="number" min="0" step="0.01" value="${price ?? ''}" required></label>
+            <button type="submit">Aggiungi al portafoglio${foil ? ' (foil)' : ''}</button>
           </form>
+          <div>
+            <h3>Tutte le stampe di ${esc(card.name)}</h3>
+            <div class="scroll-x"><table>
+              <thead><tr><th>set</th><th>n°</th><th>rarità</th><th class="n">prezzo</th><th class="n">foil</th><th class="n">30g</th><th>segnale</th></tr></thead>
+              <tbody>${variants.slice(0, 60).map(v => {
+                const vf = fc(v), vs = statsOf(v);
+                return `<tr class="pick${v.id === card.id ? ' me' : ''}" data-open="${v.id}">
+                  <td>${esc(v.setName)}${v.flags & FLAG.reserved ? ' ★' : ''}</td><td>${esc(v.cn)}</td><td>${esc(v.rarity)}</td>
+                  <td class="n">${money(priceOf(v))}</td><td class="n">${money(priceOf(v, true))}</td>
+                  <td class="n ${tone(vs?.[0])}">${vs?.[0] == null ? '—' : pct(vs[0])}</td>
+                  <td><span class="badge ${vf.tone}">${vf.signal}</span></td></tr>`;
+              }).join('')}</tbody></table></div>
+            ${variants.length > 60 ? `<p class="hint">Mostrate le 60 stampe più costose di ${variants.length}.</p>` : ''}
+          </div>
         </div>
       </div>`;
   };
+
+  const loadSeries = () => {
+    const q = quote(card, foil);
+    return D.series(card, q.currency, q.foil)
+      .then(s => { series = s; draw(); })
+      .catch(() => { series = []; draw(); });
+  };
+
   draw();
+  if (!dlg.open) dlg.showModal();
+  loadSeries();   // lo shard pesa ~70 KB e serve solo per il grafico
+
   dlg.onclick = e => {
     if (e.target === dlg || e.target.closest('[data-close]')) return dlg.close();
     const fb = e.target.closest('[data-foil]');
-    if (fb) { foil = fb.dataset.foil === '1'; draw(); }
-    if (e.target.closest('[data-act="watch"]')) { toggleWatch(card); draw(); }
-    if (e.target.closest('[data-act="prints"]')) {
-      dlg.close();
-      document.querySelector('[data-tab="market"]').click();
-      $('#search-q').value = card.name;
-      runMarket(`!"${card.name.replace(/"/g, '')}" unique:prints`, 'released');
-    }
+    if (fb) { foil = fb.dataset.foil === '1'; series = null; draw(); loadSeries(); return; }
+    if (e.target.closest('[data-refresh-card]')) { D.refresh([card.id]).then(() => draw()); return; }
+    if (e.target.closest('[data-watch]')) { toggleWatch(card.id); draw(); return; }
+    const open = e.target.closest('[data-open]');
+    if (open && open.dataset.open !== card.id) { dlg.close(); openCard(open.dataset.open); }
   };
   dlg.onsubmit = e => {
     if (!e.target.matches('[data-addlot]')) return;
     e.preventDefault();
     const fd = new FormData(e.target);
     S.portfolio.push({ lid: crypto.randomUUID(), id: card.id, qty: Number(fd.get('qty')), buy: Number(fd.get('buy')),
-      cond: fd.get('cond') || 'NM', foil, cur: S.settings.currency, date: new Date().toISOString() });
-    S.cards[card.id] = card; snapshot(card);
-    save('portfolio', 'cards', 'history');
+      cond: fd.get('cond'), foil, cur: cur(), date: new Date().toISOString().slice(0, 10) });
+    save('portfolio');
     toast(`Aggiunto: ${fd.get('qty')}× ${card.name}`);
     renderAll(); dlg.close();
   };
-  if (!dlg.open) dlg.showModal();
 }
 
-function toggleWatch(card) {
-  if (S.watch.includes(card.id)) S.watch = S.watch.filter(x => x !== card.id);
-  else {
-    S.watch.push(card.id); S.cards[card.id] = card; snapshot(card);
-    if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
-  }
-  save('watch', 'cards', 'history');
+function toggleWatch(id) {
+  S.watch = S.watch.includes(id) ? S.watch.filter(x => x !== id) : [...S.watch, id];
+  save('watch');
+  if (S.watch.includes(id) && 'Notification' in window && Notification.permission === 'default') Notification.requestPermission();
   renderAll();
+  refreshTracked({ silent: true });
 }
 
-// ---------- market / scanner ----------
-const searchCache = {};
-const pkey = () => S.settings.currency;
-const PRESETS = [
-  { name: 'Blue chip Commander', q: p => `f:commander ${p}>=10 game:paper`, order: 'edhrec' },
-  { name: 'Reserved List', q: p => `is:reserved ${p}>=1`, order: 'edhrec' },
-  { name: 'Staple Modern/Legacy', q: p => `(f:modern or f:legacy) -f:standard ${p}>=5`, order: 'edhrec' },
-  { name: 'Mai ristampate', q: p => `not:reprint -is:reserved f:commander ${p}>=5 date<${isoDaysAgo(365)}`, order: 'edhrec' },
-  { name: 'Uscite recenti (rischio calo)', q: p => `date>=${isoDaysAgo(60)} ${p}>=3 game:paper`, order: pkey() },
-  { name: 'Vintage (prima del 2003)', q: p => `date<2003-01-01 ${p}>=10`, order: 'edhrec' },
-  { name: 'Mitiche giocate sotto 20', q: p => `r:mythic ${p}>=5 ${p}<=20 f:commander`, order: 'edhrec' },
-];
-function isoDaysAgo(n) { return new Date(Date.now() - n * DAY).toISOString().slice(0, 10); }
-
-async function search(q, order = 'edhrec') {
-  if (!/\bgame:paper\b/.test(q)) q += ' game:paper'; // solo carte fisiche, mai stampe digitali
-  const unique = /\bunique:/.test(q) ? '' : '&unique=cards';
-  const data = await api(`/cards/search?order=${order}${unique}&q=${encodeURIComponent(q)}`);
-  if (data.object === 'error') return [];
-  return (data.data || []).map(c => (searchCache[c.id] = slim(c)));
-}
-
-async function runMarket(q, order) {
-  const box = $('#market-results');
-  box.innerHTML = '<p class="muted">Ricerca…</p>';
+// ---------------------------------------------------------------- aggiornamento in diretta
+const tracked = () => [...new Set([...S.watch, ...S.portfolio.map(l => l.id)])];
+let refreshing = false;
+async function refreshTracked({ silent = false } = {}) {
+  const ids = tracked();
+  if (!ids.length) { if (!silent) toast('Nessuna carta seguita da aggiornare'); return; }
+  if (refreshing) return;
+  refreshing = true;
+  $('#live').className = 'dot busy';
   try {
-    const cards = await search(q, order);
-    box.innerHTML = cards.length ? cards.slice(0, 60).map(c => cardRow(c)).join('') : '<p class="muted">Nessun risultato.</p>';
-  } catch (e) { box.innerHTML = `<p class="down">${esc(e.message)}</p>`; }
+    const changed = await D.refresh(ids);
+    $('#live').className = 'dot ok';
+    $('#live').title = 'Prezzi aggiornati alle ' + new Date().toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+    for (const ch of changed) {
+      const card = D.state.byId.get(ch.id);
+      const a = ch.before[cur()], b = ch.after[cur()];
+      if (!card || !a || !b) continue;
+      const delta = (b - a) / a;
+      if (Math.abs(delta) * 100 >= S.settings.alertPct) {
+        const msg = `${card.name}: ${money(a)} → ${money(b)} (${pct(delta)})`;
+        toast(msg);
+        if ('Notification' in window && Notification.permission === 'granted') new Notification('MTG Invest', { body: msg, icon: 'icon.svg' });
+      }
+    }
+    if (!silent) toast(`Prezzi aggiornati: ${ids.length} ${ids.length === 1 ? 'carta' : 'carte'}`);
+    renderAll();
+  } catch (e) {
+    $('#live').className = 'dot err';
+    $('#live').title = 'Aggiornamento non riuscito: ' + e.message;
+    if (!silent) toast('Aggiornamento non riuscito: ' + e.message);
+  } finally { refreshing = false; }
 }
+let timer;
+const schedule = () => {
+  clearInterval(timer);
+  timer = setInterval(() => refreshTracked({ silent: true }), Math.max(2, S.settings.refreshMin) * 60000);
+};
 
-async function scanOpportunities() {
-  const box = $('#dash-opps');
-  const cached = LS.get('opps', null);
-  let cards;
-  if (cached && Date.now() - cached.t < 6 * HOUR && cached.cur === S.settings.currency) cards = cached.cards;
-  else {
-    try {
-      const p = pkey();
-      const [a, b] = [await search(`f:commander ${p}>=3 ${p}<=150 game:paper date<${isoDaysAgo(180)}`, 'edhrec'),
-        await search(`(is:reserved or not:reprint) ${p}>=5 game:paper date<${isoDaysAgo(365)}`, 'edhrec')];
-      const seen = new Set();
-      cards = [...a, ...b].filter(c => !seen.has(c.oracle_id) && seen.add(c.oracle_id));
-      LS.set('opps', { t: Date.now(), cur: S.settings.currency, cards });
-    } catch (e) { box.innerHTML = `<p class="down">Scanner non disponibile: ${esc(e.message)}</p>`; return; }
-  }
-  cards.forEach(c => (searchCache[c.id] = c));
-  const ranked = cards.map(c => S.cards[c.id] || c).map(c => ({ c, f: fc(c) })).filter(x => x.f.tone === 'up')
-    .sort((x, y) => y.f.fund.score - x.f.fund.score || y.f.netEdge - x.f.netEdge).slice(0, 10);
-  box.innerHTML = ranked.length ? ranked.map(({ c, f }) => cardRow(c, {
-    extra: `<div class="why">Punteggio ${f.fund.score}/100 · atteso ${pct(f.drift)} a ${f.horizonDays}g</div>` })).join('')
-    : '<p class="muted">Nessuna opportunità forte oggi: anche non comprare è una scelta da investitore.</p>';
+// ---------------------------------------------------------------- eventi
+const TABS = ['radar', 'market', 'watch', 'portfolio', 'model'];
+function showTab(name) {
+  if (!TABS.includes(name)) return;
+  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
+  document.querySelectorAll('.tab').forEach(s => s.classList.toggle('active', s.id === 'tab-' + name));
+  if (name === 'market') renderMarket();
+  if (name === 'model') renderModel();
+  if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
 }
-
-// ---------- events ----------
 document.addEventListener('click', e => {
-  const tab = e.target.closest('[data-tab]');
-  if (tab) {
-    document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('active', b === tab));
-    document.querySelectorAll('.tab').forEach(s => s.classList.toggle('active', s.id === 'tab-' + tab.dataset.tab));
-    return;
-  }
-  const star = e.target.closest('[data-action="star"]');
-  if (star) { e.stopPropagation(); const c = S.cards[star.dataset.id] || searchCache[star.dataset.id]; if (c) { toggleWatch(c); star.classList.toggle('on'); } return; }
-  const rm = e.target.closest('[data-action="remove-lot"]');
-  if (rm) { e.stopPropagation(); if (confirm('Rimuovere questa posizione?')) { S.portfolio = S.portfolio.filter(l => l.lid !== rm.dataset.lid); save('portfolio'); renderAll(); } return; }
-  const row = e.target.closest('[data-action="open"]');
-  if (row && !e.target.closest('#card-dialog')) openCard(row.dataset.id);
+  const tab = e.target.closest('.tabs [data-tab]');
+  if (tab) return showTab(tab.dataset.tab);
+  const star = e.target.closest('[data-star]');
+  if (star) { e.stopPropagation(); toggleWatch(star.dataset.star); return; }
+  const del = e.target.closest('[data-del]');
+  if (del) { e.stopPropagation(); S.portfolio = S.portfolio.filter(l => l.lid !== del.dataset.del); save('portfolio'); renderAll(); return; }
+  const open = e.target.closest('[data-open]');
+  if (open && !e.target.closest('#card-dialog')) openCard(open.dataset.open);
 });
 
-$('#search-form').addEventListener('submit', e => {
+$('#quick-search').addEventListener('submit', e => {
   e.preventDefault();
-  let q = $('#search-q').value.trim();
-  if (!q) return;
-  runMarket(q, 'edhrec');
+  $('#filters').elements.q.value = $('#q').value;
+  showTab('market');
 });
-$('#presets').innerHTML = PRESETS.map((p, i) => `<button class="chip" data-preset="${i}">${p.name}</button>`).join('');
-$('#presets').addEventListener('click', e => {
-  const b = e.target.closest('[data-preset]'); if (!b) return;
-  const p = PRESETS[b.dataset.preset];
-  runMarket(p.q(pkey()), p.order);
+let typeTimer;
+$('#q').addEventListener('input', () => {
+  clearTimeout(typeTimer);
+  typeTimer = setTimeout(() => {
+    if (!$('#q').value.trim()) return;
+    $('#filters').elements.q.value = $('#q').value;
+    marketShown = 100;
+    if (!$('#tab-market').classList.contains('active')) showTab('market'); else renderMarket();
+  }, 220);
 });
+$('#filters').addEventListener('input', () => { marketShown = 100; renderMarket(); });
+$('#filters').addEventListener('submit', e => e.preventDefault());
+$('#more').addEventListener('click', () => { marketShown += 100; renderMarket(); });
+$('#refresh').addEventListener('click', () => refreshTracked());
+$('#currency').addEventListener('change', e => { S.settings.currency = e.target.value; save('settings'); renderAll(); });
 
-$('#refresh-btn').addEventListener('click', () => refresh());
-
-const sf = $('#settings-form');
-for (const [k, v] of Object.entries(S.settings)) if (sf.elements[k]) sf.elements[k].value = v;
-sf.addEventListener('submit', e => {
+const pfForm = $('#pf-settings');
+for (const k of ['feePct', 'horizon', 'refreshMin', 'alertPct']) if (pfForm.elements[k]) pfForm.elements[k].value = S.settings[k];
+pfForm.addEventListener('submit', e => {
   e.preventDefault();
-  const fd = new FormData(sf);
-  const prevCur = S.settings.currency;
-  for (const [k, v] of fd) S.settings[k] = k === 'currency' ? v : Number(v);
-  save('settings'); schedule(); renderAll();
-  if (prevCur !== S.settings.currency) scanOpportunities();
-  toast('Impostazioni salvate');
-});
-sf.insertAdjacentHTML('beforeend', '<button type="button" class="ghost" id="notif-btn">Attiva le notifiche sui prezzi</button>');
-$('#notif-btn').addEventListener('click', async () => {
-  if (!('Notification' in window)) return toast('Questo browser non supporta le notifiche');
-  toast((await Notification.requestPermission()) === 'granted' ? 'Notifiche attive' : 'Notifiche negate');
+  for (const [k, v] of new FormData(pfForm)) S.settings[k] = Number(v);
+  save('settings'); schedule(); renderAll(); toast('Impostazioni salvate');
 });
 
-function download(name, obj) {
+$('#export').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify({ version: 2, settings: S.settings, watch: S.watch, portfolio: S.portfolio }, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(obj, null, 2)], { type: 'application/json' }));
-  a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-}
-$('#export-watch').addEventListener('click', () => download('watchlist.json',
-  { ids: trackedIds(), names: Object.fromEntries(trackedIds().map(id => [id, S.cards[id]?.name])) }));
-$('#export-pf').addEventListener('click', () => download(`mtg-invest-backup-${isoDaysAgo(0)}.json`,
-  { version: 1, settings: S.settings, watch: S.watch, portfolio: S.portfolio, cards: S.cards, history: S.history }));
-$('#import-pf').addEventListener('change', async e => {
+  a.href = URL.createObjectURL(blob);
+  a.download = `mtg-invest-${new Date().toISOString().slice(0, 10)}.json`;
+  a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$('#import').addEventListener('change', async e => {
   const file = e.target.files[0]; if (!file) return;
   try {
     const d = JSON.parse(await file.text());
-    if (!Array.isArray(d.portfolio) || !Array.isArray(d.watch)) throw new Error('file non valido');
-    Object.assign(S, { watch: d.watch, portfolio: d.portfolio, cards: d.cards || {}, history: d.history || {} });
-    S.settings = { ...DEFAULTS, ...(d.settings || {}) };
-    save('watch', 'portfolio', 'cards', 'history', 'settings');
-    toast('Backup importato'); refresh({ silent: true });
+    if (!Array.isArray(d.watch) || !Array.isArray(d.portfolio)) throw new Error('file non riconosciuto');
+    S.watch = d.watch; S.portfolio = d.portfolio; S.settings = { ...DEFAULTS, ...(d.settings || {}) };
+    save('watch', 'portfolio', 'settings');
+    renderAll(); refreshTracked({ silent: true }); toast('Backup importato');
   } catch (err) { toast('Importazione fallita: ' + err.message); }
 });
-$('#wipe').addEventListener('click', () => {
-  if (!confirm('Cancellare watchlist, portafoglio e storico salvati in questo browser?')) return;
-  Object.keys(localStorage).filter(k => k.startsWith('mtgi.')).forEach(k => localStorage.removeItem(k));
+$('#wipe').addEventListener('click', async () => {
+  if (!confirm('Cancellare watchlist, portafoglio e cache dei dati in questo browser?')) return;
+  Object.keys(localStorage).filter(k => k.startsWith('mtgi2.')).forEach(k => localStorage.removeItem(k));
+  await D.clearCache();
   location.reload();
 });
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && Date.now() - (S.lastUpdate || 0) > S.settings.refreshMin * 60000) refresh({ silent: true });
-});
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshTracked({ silent: true }); });
+window.addEventListener('hashchange', () => showTab(location.hash.slice(1)));
 
-// ---------- boot ----------
+// ---------------------------------------------------------------- avvio
 (async function boot() {
-  renderAll();
-  await loadRemoteHistory();
-  renderAll();
+  $('#currency').value = S.settings.currency;
+  try {
+    await D.load({
+      onProgress: (loaded, total, first, done) => {
+        $('#load-bar').style.width = Math.round((loaded / total) * 100) + '%';
+        $('#load-text').textContent = done ? `${nf0.format(loaded)} stampe pronte` : `${nf0.format(loaded)} di ${nf0.format(total)} stampe…`;
+        if (first) { renderAll(); if (location.hash.slice(1)) showTab(location.hash.slice(1)); }
+        if (done) { renderAll(); setTimeout(() => { $('#loading').hidden = true; }, 1500); }
+      },
+    });
+  } catch (e) {
+    $('#load-text').innerHTML = `Dati non caricati: ${esc(e.message)}. Se stai aprendo il file in locale, ` +
+      'servi la cartella con un server (<code>python3 -m http.server</code>).';
+    return;
+  }
   schedule();
-  if (trackedIds().length) refresh({ silent: true }); else $('#live-dot').className = 'dot ok';
-  scanOpportunities();
+  refreshTracked({ silent: true });
 })();
