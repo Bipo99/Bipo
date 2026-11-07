@@ -44,8 +44,8 @@ jobs:
           rm -f _site/data/watchlist.json
           du -sh _site _site/data
 
-      - uses: actions/configure-pages@v5
-        with: { enablement: true }
+      # Pages va attivato una volta sola a mano (Settings -> Pages -> Source: GitHub Actions):
+      # il token delle Action non ha il permesso di crearlo da sé.
       - uses: actions/upload-pages-artifact@v3
         with: { path: _site }
 

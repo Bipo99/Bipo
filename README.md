@@ -75,12 +75,14 @@ teorico: l'incertezza dichiarata è onesta.
 
 ## Pubblicare il sito
 
-Il repository si pubblica da sé su **GitHub Pages**: `.github/workflows/pages.yml` scarica i dati,
-ristima il modello, lancia i test e pubblica. Parte a ogni push, ogni 6 ore e a mano da *Actions →
-Run workflow*. Alla prima esecuzione attiva Pages da solo (`enablement: true`); se GitHub lo
-rifiuta, basta impostare una volta *Settings → Pages → Source: GitHub Actions*.
+**Una cosa va fatta a mano, una volta sola:** su GitHub apri *Settings → Pages* e imposta
+**Source: GitHub Actions**. Il token delle Action non ha il permesso di attivare Pages da sé.
 
-> Pages richiede un repository pubblico, oppure un piano GitHub Pro/Team se resta privato.
+Fatto quello, il resto è automatico: `.github/workflows/pages.yml` scarica i dati, ristima il
+modello, lancia i test e pubblica. Parte a ogni push, **ogni 6 ore** e a mano da *Actions → Run
+workflow*. In CI il giro completo dura meno di due minuti.
+
+L'indirizzo del sito sarà `https://bipo99.github.io/Bipo/`.
 
 ## Lavorarci in locale
 
