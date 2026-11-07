@@ -6,3 +6,4 @@ data/meta.json
 data/*.log
 node_modules/
 .DS_Store
+data/snapshot.json
