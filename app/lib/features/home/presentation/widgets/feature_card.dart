@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// Card della Home (posizione, umore, attività, farmaci).
 /// Piccola animazione di "pressione" al tocco come micro-interazione.
