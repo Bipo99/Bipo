@@ -32,6 +32,12 @@ android {
     // Chiave di firma di SVILUPPO, versionata apposta: così ogni build del cloud
     // è firmata con la stessa chiave e l'APK si aggiorna senza disinstallare.
     // Nella Fase 8 passeremo a una chiave privata custodita nei Secret di GitHub.
+    // Il controllo "lint" durante la build di release va in crash con le librerie
+    // Firebase più recenti e non aggiunge nulla per un'app installata solo da noi due.
+    lint {
+        checkReleaseBuilds = false
+    }
+
     signingConfigs {
         create("bipoDev") {
             storeFile = file("bipo-dev.keystore")
