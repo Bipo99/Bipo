@@ -1,0 +1,84 @@
+# Compila l'app di coppia (cartella app/) nel cloud a ogni push sul branch:
+#   1. analisi del codice e test automatici
+#   2. versione web  → pubblicata su Firebase Hosting (il link da aprire sui telefoni)
+#   3. APK Android   → scaricabile dallo stesso link, in /download/bipo.apk
+# La pubblicazione parte solo quando il Secret FIREBASE_SERVICE_ACCOUNT esiste;
+# fino ad allora i file compilati restano scaricabili tra gli "Artifacts" della run.
+name: App di coppia
+
+on:
+  push:
+    branches: [claude/couple-app-flutter-firebase-nhsjem]
+    paths: ['app/**', '.github/workflows/app.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.35.7'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '17' }
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Dipendenze
+        run: flutter pub get
+
+      - name: Analisi del codice
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test
+
+      # Numero di versione crescente: ogni build ha un versionCode più alto,
+      # così Android accetta l'aggiornamento sopra quello vecchio.
+      - name: Versione web (autonoma, nessun file dai CDN di Google)
+        run: flutter build web --release --no-web-resources-cdn --build-number=${{ github.run_number }}
+
+      - name: APK Android
+        run: flutter build apk --release --build-number=${{ github.run_number }}
+
+      - name: Metti l'APK dentro il sito
+        run: |
+          mkdir -p build/web/download
+          cp build/app/outputs/flutter-apk/app-release.apk build/web/download/bipo.apk
+          ls -la build/web/download
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bipo-build-${{ github.run_number }}
+          path: |
+            app/build/web/download/bipo.apk
+          retention-days: 14
+
+      - name: Pubblica su Firebase Hosting
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          PROJECT: ${{ vars.FIREBASE_PROJECT_ID }}
+        run: |
+          if [ -z "$SA" ] || [ -z "$PROJECT" ]; then
+            echo "::notice::Firebase non ancora configurato: salto la pubblicazione."
+            exit 0
+          fi
+          echo "$SA" > "$RUNNER_TEMP/sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
+          npx --yes firebase-tools@15 deploy --only hosting --project "$PROJECT" --non-interactive
+          rm -f "$RUNNER_TEMP/sa.json"
+          echo "::notice::Pubblicata su https://$PROJECT.web.app"

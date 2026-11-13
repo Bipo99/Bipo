@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="La nostra app di coppia, privata.">
+  <!-- Nessun motore di ricerca deve indicizzare l'app. -->
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="theme-color" content="#E07A5F">
+
+  <!-- iPhone: si installa con Condividi → Aggiungi alla schermata Home -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Bipo">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Bipo</title>
+  <link rel="manifest" href="manifest.json">
+  <style>
+    /* Sfondo caldo durante il caricamento, al posto della pagina bianca */
+    html, body { margin: 0; height: 100%; background: #FFF8F3; }
+    @media (prefers-color-scheme: dark) { html, body { background: #1E1A18; } }
+  </style>
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
