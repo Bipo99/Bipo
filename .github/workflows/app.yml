@@ -12,6 +12,9 @@ on:
     paths: ['app/**', '.github/workflows/app.yml']
   workflow_dispatch:
 
+permissions:
+  contents: write   # serve per pubblicare l'APK come "release" con link diretto
+
 concurrency:
   group: app-${{ github.ref }}
   cancel-in-progress: true
@@ -67,6 +70,19 @@ jobs:
           path: |
             app/build/web/download/bipo.apk
           retention-days: 14
+
+      # Link diretto e stabile all'APK, scaricabile dal telefono senza account
+      # GitHub e senza zip: https://github.com/<repo>/releases/download/app-latest/bipo.apk
+      - name: Pubblica l'APK con un link diretto
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete app-latest --yes --cleanup-tag || true
+          gh release create app-latest build/web/download/bipo.apk \
+            --title "Bipo – ultima versione (build ${{ github.run_number }})" \
+            --notes "APK Android dell'app di coppia. Si aggiorna da solo a ogni nuova build." \
+            --prerelease --target "$GITHUB_SHA"
+          echo "::notice::APK: https://github.com/${{ github.repository }}/releases/download/app-latest/bipo.apk"
 
       - name: Pubblica su Firebase Hosting
         env:
