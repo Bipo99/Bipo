@@ -1,4 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Rete: Firebase e mappa. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Posizione mentre l'app è aperta. Quella in background arriverà con
+         la Fase 3 completa, insieme alla sua schermata esplicativa. -->
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <application
         android:label="Bipo"
         android:name="${applicationName}"

@@ -53,6 +53,20 @@ flutter build apk --release
 - Nessun SDK di analytics, crash reporting o pubblicità.
 - La versione web è compilata senza CDN e il sito non è indicizzato dai motori di ricerca.
 - I dati sono protetti dalle regole di sicurezza di Firestore (Fase 1).
+- La mappa usa le tessere di OpenStreetMap: per disegnarla il telefono scarica
+  le immagini della zona inquadrata da `tile.openstreetmap.org` (nessun account,
+  nessuna chiave, nessun tracciamento pubblicitario).
+- Il GPS lavora solo quando la condivisione è accesa; spegnendola la posizione
+  viene dimenticata subito.
+
+## Stato delle funzioni
+
+| Funzione | Stato |
+|---|---|
+| Home, tema chiaro/scuro | ✅ |
+| Posizione: mappa, mia posizione, batteria, orario, modalità risparmio, interruttore | ✅ (solo app aperta; invio al partner dopo la Fase 1) |
+| Account e accoppiamento | ⏳ serve il progetto Firebase |
+| Umore, attività, farmaci, urgenti, chat | ⏳ |
 
 ## Note
 

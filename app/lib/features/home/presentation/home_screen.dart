@@ -1,8 +1,11 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../../app/theme/app_theme.dart';
 import '../../../core/firebase/firebase_bootstrap.dart';
+import '../../location/presentation/location_controller.dart';
+import '../../location/presentation/location_format.dart';
 import 'widgets/feature_card.dart';
 import 'widgets/urgent_button.dart';
 
@@ -14,13 +17,16 @@ class HomeScreen extends ConsumerWidget {
   void _comingSoon(BuildContext context, String what, int phase) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('$what: disponibile dalla Fase $phase')));
+      ..showSnackBar(
+        SnackBar(content: Text('$what: disponibile dalla Fase $phase')),
+      );
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final status = ref.watch(firebaseStatusProvider);
+    final location = ref.watch(locationControllerProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -39,7 +45,7 @@ class HomeScreen extends ConsumerWidget {
               onPressed: () => _comingSoon(context, 'Messaggio urgente', 5),
             ),
             const SizedBox(height: 16),
-            const _SharingSummary(),
+            _SharingSummary(sharing: [if (location.sharing) 'posizione']),
             const SizedBox(height: 16),
             // Due card per riga che crescono in altezza con il testo:
             // nessun taglio anche con la dimensione del testo al massimo.
@@ -48,9 +54,9 @@ class HomeScreen extends ConsumerWidget {
                 FeatureCard(
                   icon: Icons.place_rounded,
                   title: 'Posizione',
-                  subtitle: 'In arrivo',
+                  subtitle: _locationSubtitle(location),
                   accent: AppColors.terracotta,
-                  onTap: () => _comingSoon(context, 'Posizione', 3),
+                  onTap: () => context.go('/posizione'),
                 ),
                 FeatureCard(
                   icon: Icons.mood_rounded,
@@ -89,6 +95,13 @@ class HomeScreen extends ConsumerWidget {
   }
 }
 
+String _locationSubtitle(LocationState s) {
+  if (!s.sharing) return 'Condivisione spenta';
+  final last = s.last;
+  if (last == null) return 'Accesa · cerco il segnale…';
+  return 'Accesa · ${LocationFormat.ago(last.timestamp)}';
+}
+
 /// Riga di due card della stessa altezza.
 class _CardRow extends StatelessWidget {
   const _CardRow({required this.children});
@@ -112,7 +125,10 @@ class _CardRow extends StatelessWidget {
 
 /// Riquadro sempre visibile con ciò che sto condividendo in questo momento.
 class _SharingSummary extends StatelessWidget {
-  const _SharingSummary();
+  const _SharingSummary({required this.sharing});
+
+  /// Cosa sto condividendo adesso (es. ['posizione']).
+  final List<String> sharing;
 
   @override
   Widget build(BuildContext context) {
@@ -132,7 +148,9 @@ class _SharingSummary extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: Text(
-              'Stai condividendo: niente, per ora.',
+              sharing.isEmpty
+                  ? 'Stai condividendo: niente, per ora.'
+                  : 'Stai condividendo: ${sharing.join(', ')}.',
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: theme.colorScheme.onSecondaryContainer,
               ),
