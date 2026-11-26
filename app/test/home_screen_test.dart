@@ -36,7 +36,7 @@ void main() {
     await tester.pumpWidget(_wrap());
     await tester.tap(find.text('Umore'));
     await tester.pump();
-    expect(find.text("L'umore arriva nella Fase 2"), findsOneWidget);
+    expect(find.text('Umore: disponibile dalla Fase 2'), findsOneWidget);
   });
 
   testWidgets('funziona anche con tema scuro e testo grande', (tester) async {

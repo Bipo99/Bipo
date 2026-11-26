@@ -14,7 +14,7 @@ class HomeScreen extends ConsumerWidget {
   void _comingSoon(BuildContext context, String what, int phase) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('$what arriva nella Fase $phase')));
+      ..showSnackBar(SnackBar(content: Text('$what: disponibile dalla Fase $phase')));
   }
 
   @override
@@ -36,7 +36,7 @@ class HomeScreen extends ConsumerWidget {
           padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
           children: [
             UrgentButton(
-              onPressed: () => _comingSoon(context, 'Il messaggio urgente', 5),
+              onPressed: () => _comingSoon(context, 'Messaggio urgente', 5),
             ),
             const SizedBox(height: 16),
             const _SharingSummary(),
@@ -50,14 +50,14 @@ class HomeScreen extends ConsumerWidget {
                   title: 'Posizione',
                   subtitle: 'In arrivo',
                   accent: AppColors.terracotta,
-                  onTap: () => _comingSoon(context, 'La posizione', 3),
+                  onTap: () => _comingSoon(context, 'Posizione', 3),
                 ),
                 FeatureCard(
                   icon: Icons.mood_rounded,
                   title: 'Umore',
                   subtitle: 'In arrivo',
                   accent: const Color(0xFFD9A441),
-                  onTap: () => _comingSoon(context, "L'umore", 2),
+                  onTap: () => _comingSoon(context, 'Umore', 2),
                 ),
               ],
             ),
@@ -69,14 +69,14 @@ class HomeScreen extends ConsumerWidget {
                   title: 'Cosa sto facendo',
                   subtitle: 'In arrivo',
                   accent: AppColors.sage,
-                  onTap: () => _comingSoon(context, "L'attività", 2),
+                  onTap: () => _comingSoon(context, 'Cosa sto facendo', 2),
                 ),
                 FeatureCard(
                   icon: Icons.medication_rounded,
                   title: 'Farmaci',
                   subtitle: 'In arrivo',
                   accent: const Color(0xFF7A8CC9),
-                  onTap: () => _comingSoon(context, 'I farmaci', 4),
+                  onTap: () => _comingSoon(context, 'Farmaci', 4),
                 ),
               ],
             ),
